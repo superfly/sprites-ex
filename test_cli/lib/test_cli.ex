@@ -212,7 +212,9 @@ defmodule SpritesTestCli do
         tty_cols: opts[:tty_cols] || 80,
         env: opts[:env] || [],
         dir: opts[:dir],
-        timeout: opts[:timeout]
+        timeout: opts[:timeout],
+        detachable: opts[:detachable],
+        session_id: opts[:session_id]
       ]
       |> Enum.reject(fn {_, v} -> is_nil(v) end)
 

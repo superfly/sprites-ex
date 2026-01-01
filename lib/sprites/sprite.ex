@@ -66,6 +66,8 @@ defmodule Sprites.Sprite do
     |> add_dir_param(opts)
     |> add_env_params(opts)
     |> add_tty_params(opts)
+    |> add_detachable_param(opts)
+    |> add_session_id_param(opts)
   end
 
   defp add_stdin_param(params, opts) do
@@ -94,6 +96,21 @@ defmodule Sprites.Sprite do
       [{"tty", "true"}, {"rows", to_string(rows)}, {"cols", to_string(cols)} | params]
     else
       params
+    end
+  end
+
+  defp add_detachable_param(params, opts) do
+    if Keyword.get(opts, :detachable, false) do
+      [{"detachable", "true"} | params]
+    else
+      params
+    end
+  end
+
+  defp add_session_id_param(params, opts) do
+    case Keyword.get(opts, :session_id) do
+      nil -> params
+      session_id -> [{"session_id", session_id} | params]
     end
   end
 end
