@@ -244,19 +244,25 @@ defmodule SpritesTestCli do
   defp handle_policy_set(sprite, policy_json, logger) do
     case Jason.decode(policy_json) do
       {:ok, data} ->
-        policy = Sprites.Policy.from_map(data)
-        log_event(logger, "policy_set_start", %{sprite: sprite.name, rules_count: length(policy.rules)})
+        # Validate that "rules" key exists
+        unless Map.has_key?(data, "rules") do
+          IO.puts(:stderr, "Error: Invalid policy schema - missing 'rules' key")
+          {:error, :invalid_schema}
+        else
+          policy = Sprites.Policy.from_map(data)
+          log_event(logger, "policy_set_start", %{sprite: sprite.name, rules_count: length(policy.rules)})
 
-        case Sprites.update_network_policy(sprite, policy) do
-          :ok ->
-            log_event(logger, "policy_set_completed", %{rules_count: length(policy.rules)})
-            IO.puts("Network policy updated")
-            :ok
+          case Sprites.update_network_policy(sprite, policy) do
+            :ok ->
+              log_event(logger, "policy_set_completed", %{rules_count: length(policy.rules)})
+              IO.puts("Network policy updated")
+              :ok
 
-          {:error, reason} ->
-            log_event(logger, "policy_set_failed", %{error: inspect(reason)})
-            IO.puts(:stderr, "Error setting policy: #{inspect(reason)}")
-            {:error, reason}
+            {:error, reason} ->
+              log_event(logger, "policy_set_failed", %{error: inspect(reason)})
+              IO.puts(:stderr, "Error setting policy: #{inspect(reason)}")
+              {:error, reason}
+          end
         end
 
       {:error, reason} ->
