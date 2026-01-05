@@ -199,16 +199,21 @@ defmodule Sprites.Checkpoint do
   # Start a streaming NDJSON request and return a lazy enumerable
   defp start_ndjson_stream(url, method, headers, body) do
     # Use :httpc for streaming support
-    request =
-      case body do
-        nil ->
-          {String.to_charlist(url),
-           Enum.map(headers, fn {k, v} -> {String.to_charlist(k), String.to_charlist(v)} end)}
+    # POST requests require a 4-tuple (url, headers, content_type, body)
+    charlist_headers =
+      Enum.map(headers, fn {k, v} -> {String.to_charlist(k), String.to_charlist(v)} end)
 
-        body ->
-          {String.to_charlist(url),
-           Enum.map(headers, fn {k, v} -> {String.to_charlist(k), String.to_charlist(v)} end),
-           ~c"application/json", body}
+    request =
+      case {method, body} do
+        {:post, nil} ->
+          # POST with no body still needs 4-tuple format
+          {String.to_charlist(url), charlist_headers, ~c"application/json", ""}
+
+        {:post, body} ->
+          {String.to_charlist(url), charlist_headers, ~c"application/json", body}
+
+        {_get, _} ->
+          {String.to_charlist(url), charlist_headers}
       end
 
     http_method = method
