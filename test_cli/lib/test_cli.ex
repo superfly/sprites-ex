@@ -28,6 +28,12 @@ defmodule SpritesTestCli do
         ["destroy", name] ->
           handle_destroy(client, name, logger)
 
+        ["policy" | policy_args] ->
+          handle_policy(client, opts, policy_args, logger)
+
+        ["checkpoint" | checkpoint_args] ->
+          handle_checkpoint(client, opts, checkpoint_args, logger)
+
         [cmd | cmd_args] ->
           handle_exec(client, opts, cmd, cmd_args, logger)
 
@@ -195,6 +201,216 @@ defmodule SpritesTestCli do
         IO.puts(:stderr, "Error destroying sprite: #{inspect(reason)}")
         {:error, reason}
     end
+  end
+
+  # ============================================================================
+  # Policy Commands
+  # ============================================================================
+
+  defp handle_policy(client, opts, args, logger) do
+    sprite_name = require_sprite(opts)
+    sprite = Sprites.sprite(client, sprite_name)
+
+    case args do
+      ["get"] ->
+        handle_policy_get(sprite, logger)
+
+      ["set", policy_json] ->
+        handle_policy_set(sprite, policy_json, logger)
+
+      _ ->
+        IO.puts(:stderr, "Error: policy subcommand required (get, set)")
+        {:error, "Invalid policy subcommand"}
+    end
+  end
+
+  defp handle_policy_get(sprite, logger) do
+    log_event(logger, "policy_get_start", %{sprite: sprite.name})
+
+    case Sprites.get_network_policy(sprite) do
+      {:ok, policy} ->
+        log_event(logger, "policy_get_completed", %{rules_count: length(policy.rules)})
+        output = policy_to_json(policy)
+        IO.puts(output)
+        :ok
+
+      {:error, reason} ->
+        log_event(logger, "policy_get_failed", %{error: inspect(reason)})
+        IO.puts(:stderr, "Error getting policy: #{inspect(reason)}")
+        {:error, reason}
+    end
+  end
+
+  defp handle_policy_set(sprite, policy_json, logger) do
+    case Jason.decode(policy_json) do
+      {:ok, data} ->
+        policy = Sprites.Policy.from_map(data)
+        log_event(logger, "policy_set_start", %{sprite: sprite.name, rules_count: length(policy.rules)})
+
+        case Sprites.update_network_policy(sprite, policy) do
+          :ok ->
+            log_event(logger, "policy_set_completed", %{rules_count: length(policy.rules)})
+            IO.puts("Network policy updated")
+            :ok
+
+          {:error, reason} ->
+            log_event(logger, "policy_set_failed", %{error: inspect(reason)})
+            IO.puts(:stderr, "Error setting policy: #{inspect(reason)}")
+            {:error, reason}
+        end
+
+      {:error, reason} ->
+        IO.puts(:stderr, "Invalid policy JSON: #{inspect(reason)}")
+        {:error, reason}
+    end
+  end
+
+  defp policy_to_json(policy) do
+    %{
+      "rules" => Enum.map(policy.rules, fn rule ->
+        %{}
+        |> maybe_put_json("domain", rule.domain)
+        |> maybe_put_json("action", rule.action)
+        |> maybe_put_json("include", rule.include)
+      end)
+    }
+    |> Jason.encode!(pretty: true)
+  end
+
+  defp maybe_put_json(map, _key, nil), do: map
+  defp maybe_put_json(map, key, value), do: Map.put(map, key, value)
+
+  # ============================================================================
+  # Checkpoint Commands
+  # ============================================================================
+
+  defp handle_checkpoint(client, opts, args, logger) do
+    sprite_name = require_sprite(opts)
+    sprite = Sprites.sprite(client, sprite_name)
+
+    case args do
+      ["list"] ->
+        handle_checkpoint_list(sprite, logger)
+
+      ["get", checkpoint_id] ->
+        handle_checkpoint_get(sprite, checkpoint_id, logger)
+
+      ["create"] ->
+        handle_checkpoint_create(sprite, "", logger)
+
+      ["create", comment] ->
+        handle_checkpoint_create(sprite, comment, logger)
+
+      ["restore", checkpoint_id] ->
+        handle_checkpoint_restore(sprite, checkpoint_id, logger)
+
+      _ ->
+        IO.puts(:stderr, "Error: checkpoint subcommand required (list, get, create, restore)")
+        {:error, "Invalid checkpoint subcommand"}
+    end
+  end
+
+  defp handle_checkpoint_list(sprite, logger) do
+    log_event(logger, "checkpoint_list_start", %{sprite: sprite.name})
+
+    case Sprites.list_checkpoints(sprite) do
+      {:ok, checkpoints} ->
+        log_event(logger, "checkpoint_list_completed", %{count: length(checkpoints)})
+        output = checkpoints_to_json(checkpoints)
+        IO.puts(output)
+        :ok
+
+      {:error, reason} ->
+        log_event(logger, "checkpoint_list_failed", %{error: inspect(reason)})
+        IO.puts(:stderr, "Error listing checkpoints: #{inspect(reason)}")
+        {:error, reason}
+    end
+  end
+
+  defp handle_checkpoint_get(sprite, checkpoint_id, logger) do
+    log_event(logger, "checkpoint_get_start", %{sprite: sprite.name, checkpoint: checkpoint_id})
+
+    case Sprites.get_checkpoint(sprite, checkpoint_id) do
+      {:ok, checkpoint} ->
+        log_event(logger, "checkpoint_get_completed", %{checkpoint: checkpoint_id})
+        output = checkpoint_to_json(checkpoint)
+        IO.puts(output)
+        :ok
+
+      {:error, reason} ->
+        log_event(logger, "checkpoint_get_failed", %{error: inspect(reason)})
+        IO.puts(:stderr, "Error getting checkpoint: #{inspect(reason)}")
+        {:error, reason}
+    end
+  end
+
+  defp handle_checkpoint_create(sprite, comment, logger) do
+    log_event(logger, "checkpoint_create_start", %{sprite: sprite.name, comment: comment})
+
+    case Sprites.create_checkpoint(sprite, comment: comment) do
+      {:ok, messages} ->
+        # Stream all messages to stdout
+        Enum.each(messages, fn msg ->
+          output = Jason.encode!(Sprites.StreamMessage.to_map(msg))
+          IO.puts(output)
+        end)
+        log_event(logger, "checkpoint_create_completed", %{sprite: sprite.name})
+        :ok
+
+      {:error, reason} ->
+        log_event(logger, "checkpoint_create_failed", %{error: inspect(reason)})
+        IO.puts(:stderr, "Error creating checkpoint: #{inspect(reason)}")
+        {:error, reason}
+    end
+  end
+
+  defp handle_checkpoint_restore(sprite, checkpoint_id, logger) do
+    log_event(logger, "checkpoint_restore_start", %{sprite: sprite.name, checkpoint: checkpoint_id})
+
+    case Sprites.restore_checkpoint(sprite, checkpoint_id) do
+      {:ok, messages} ->
+        # Stream all messages to stdout
+        Enum.each(messages, fn msg ->
+          output = Jason.encode!(Sprites.StreamMessage.to_map(msg))
+          IO.puts(output)
+        end)
+        log_event(logger, "checkpoint_restore_completed", %{sprite: sprite.name, checkpoint: checkpoint_id})
+        :ok
+
+      {:error, reason} ->
+        log_event(logger, "checkpoint_restore_failed", %{error: inspect(reason)})
+        IO.puts(:stderr, "Error restoring checkpoint: #{inspect(reason)}")
+        {:error, reason}
+    end
+  end
+
+  defp checkpoints_to_json(checkpoints) do
+    checkpoints
+    |> Enum.map(&checkpoint_to_map/1)
+    |> Jason.encode!(pretty: true)
+  end
+
+  defp checkpoint_to_json(checkpoint) do
+    checkpoint
+    |> checkpoint_to_map()
+    |> Jason.encode!(pretty: true)
+  end
+
+  defp checkpoint_to_map(checkpoint) do
+    %{
+      "id" => checkpoint.id,
+      "create_time" => if(checkpoint.create_time, do: DateTime.to_iso8601(checkpoint.create_time), else: nil),
+      "history" => checkpoint.history,
+      "comment" => checkpoint.comment
+    }
+    |> Enum.reject(fn {_k, v} -> is_nil(v) end)
+    |> Map.new()
+  end
+
+  defp require_sprite(opts) do
+    opts[:sprite] ||
+      (IO.puts(:stderr, "Error: -sprite flag is required")
+       System.halt(1))
   end
 
   defp handle_exec(client, opts, cmd, args, logger) do
@@ -379,10 +595,12 @@ defmodule SpritesTestCli do
       test-cli [options] <command> [args...]
       test-cli create <sprite-name>
       test-cli destroy <sprite-name>
+      test-cli -sprite <name> policy <subcommand> [args...]
+      test-cli -sprite <name> checkpoint <subcommand> [args...]
 
     Options:
       -base-url <url>     API base URL (default: https://api.sprites.dev)
-      -sprite <name>      Sprite name (required for exec commands)
+      -sprite <name>      Sprite name (required for exec/policy/checkpoint)
       -output <mode>      Output mode: stdout, combined, exit-code, default
       -tty                Enable TTY mode
       -tty-rows <int>     TTY rows (default: 24)
@@ -395,6 +613,16 @@ defmodule SpritesTestCli do
       -session-id <id>    Attach to existing session
       -help               Show this help
 
+    Policy Commands:
+      policy get                Get current network policy
+      policy set '<json>'       Set network policy
+
+    Checkpoint Commands:
+      checkpoint list           List all checkpoints
+      checkpoint get <id>       Get checkpoint details
+      checkpoint create [comment]  Create a checkpoint
+      checkpoint restore <id>   Restore to a checkpoint
+
     Environment Variables:
       SPRITES_TEST_TOKEN  Authentication token (required)
 
@@ -402,6 +630,9 @@ defmodule SpritesTestCli do
       test-cli create my-sprite
       test-cli -sprite my-sprite -output stdout echo hello
       test-cli -sprite my-sprite -tty bash
+      test-cli -sprite my-sprite policy get
+      test-cli -sprite my-sprite checkpoint list
+      test-cli -sprite my-sprite checkpoint create "before update"
       test-cli destroy my-sprite
     """)
   end

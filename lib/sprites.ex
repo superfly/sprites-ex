@@ -226,4 +226,232 @@ defmodule Sprites do
   def stream(sprite, command, args \\ [], opts \\ []) do
     Sprites.Stream.new(sprite, command, args, opts)
   end
+
+  # ============================================================================
+  # Network Policy API
+  # ============================================================================
+
+  @doc """
+  Gets the current network policy for a sprite.
+
+  ## Examples
+
+      {:ok, policy} = Sprites.get_network_policy(sprite)
+      IO.inspect(policy.rules)
+  """
+  @spec get_network_policy(sprite()) :: {:ok, Sprites.Policy.t()} | {:error, term()}
+  def get_network_policy(sprite) do
+    Sprites.Policy.get(sprite)
+  end
+
+  @doc """
+  Updates the network policy for a sprite.
+
+  ## Examples
+
+      policy = %Sprites.Policy{
+        rules: [
+          %Sprites.Policy.Rule{domain: "example.com", action: "allow"}
+        ]
+      }
+      :ok = Sprites.update_network_policy(sprite, policy)
+  """
+  @spec update_network_policy(sprite(), Sprites.Policy.t()) :: :ok | {:error, term()}
+  def update_network_policy(sprite, policy) do
+    Sprites.Policy.update(sprite, policy)
+  end
+
+  # ============================================================================
+  # Checkpoint API
+  # ============================================================================
+
+  @doc """
+  Lists all checkpoints for a sprite.
+
+  ## Options
+
+    * `:history` - History filter string (optional)
+
+  ## Examples
+
+      {:ok, checkpoints} = Sprites.list_checkpoints(sprite)
+  """
+  @spec list_checkpoints(sprite(), keyword()) ::
+          {:ok, [Sprites.Checkpoint.t()]} | {:error, term()}
+  def list_checkpoints(sprite, opts \\ []) do
+    Sprites.Checkpoint.list(sprite, opts)
+  end
+
+  @doc """
+  Gets a specific checkpoint by ID.
+
+  ## Examples
+
+      {:ok, checkpoint} = Sprites.get_checkpoint(sprite, "checkpoint-id")
+  """
+  @spec get_checkpoint(sprite(), String.t()) :: {:ok, Sprites.Checkpoint.t()} | {:error, term()}
+  def get_checkpoint(sprite, checkpoint_id) do
+    Sprites.Checkpoint.get(sprite, checkpoint_id)
+  end
+
+  @doc """
+  Creates a new checkpoint for a sprite.
+
+  Returns a stream of messages. The stream should be consumed to completion.
+
+  ## Options
+
+    * `:comment` - Optional comment for the checkpoint
+
+  ## Examples
+
+      {:ok, messages} = Sprites.create_checkpoint(sprite, comment: "Before changes")
+      Enum.each(messages, fn msg -> IO.inspect(msg) end)
+  """
+  @spec create_checkpoint(sprite(), keyword()) :: {:ok, Enumerable.t()} | {:error, term()}
+  def create_checkpoint(sprite, opts \\ []) do
+    Sprites.Checkpoint.create(sprite, opts)
+  end
+
+  @doc """
+  Restores a sprite from a checkpoint.
+
+  Returns a stream of messages. The stream should be consumed to completion.
+
+  ## Examples
+
+      {:ok, messages} = Sprites.restore_checkpoint(sprite, "checkpoint-id")
+      Enum.each(messages, fn msg -> IO.inspect(msg) end)
+  """
+  @spec restore_checkpoint(sprite(), String.t()) :: {:ok, Enumerable.t()} | {:error, term()}
+  def restore_checkpoint(sprite, checkpoint_id) do
+    Sprites.Checkpoint.restore(sprite, checkpoint_id)
+  end
+
+  # ============================================================================
+  # Session API
+  # ============================================================================
+
+  @doc """
+  Lists all active sessions for a sprite.
+
+  ## Examples
+
+      {:ok, sessions} = Sprites.list_sessions(sprite)
+  """
+  @spec list_sessions(sprite()) :: {:ok, [Sprites.Session.t()]} | {:error, term()}
+  def list_sessions(sprite) do
+    Sprites.Session.list(sprite)
+  end
+
+  @doc """
+  Spawns and attaches to an existing session.
+
+  ## Examples
+
+      {:ok, cmd} = Sprites.attach_session(sprite, "session-id")
+  """
+  @spec attach_session(sprite(), String.t(), keyword()) :: {:ok, command()} | {:error, term()}
+  def attach_session(sprite, session_id, opts \\ []) do
+    opts = Keyword.put(opts, :session_id, session_id)
+    # When attaching to a session, we spawn with empty command
+    # The session_id will be sent as a query param
+    Command.start(sprite, "", [], opts)
+  end
+
+  # ============================================================================
+  # Port Forwarding API
+  # ============================================================================
+
+  @doc """
+  Creates a proxy session for a single port.
+
+  Returns a session PID that manages the proxy. Use `Sprites.Proxy.Session.stop/1`
+  to close the proxy.
+
+  ## Examples
+
+      {:ok, session} = Sprites.proxy_port(sprite, 3000, 3000)
+      # Local port 3000 now forwards to remote port 3000
+      Sprites.Proxy.Session.stop(session)
+  """
+  @spec proxy_port(sprite(), non_neg_integer(), non_neg_integer()) ::
+          {:ok, pid()} | {:error, term()}
+  def proxy_port(sprite, local_port, remote_port) do
+    Sprites.Proxy.proxy_port(sprite, local_port, remote_port)
+  end
+
+  @doc """
+  Creates proxy sessions for multiple port mappings.
+
+  ## Examples
+
+      mappings = [
+        %Sprites.Proxy.PortMapping{local_port: 3000, remote_port: 3000},
+        %Sprites.Proxy.PortMapping{local_port: 8080, remote_port: 80}
+      ]
+      {:ok, sessions} = Sprites.proxy_ports(sprite, mappings)
+  """
+  @spec proxy_ports(sprite(), [Sprites.Proxy.PortMapping.t()]) ::
+          {:ok, [pid()]} | {:error, term()}
+  def proxy_ports(sprite, mappings) do
+    Sprites.Proxy.proxy_ports(sprite, mappings)
+  end
+
+  # ============================================================================
+  # Extended Sprite Management
+  # ============================================================================
+
+  @doc """
+  Gets detailed information about a sprite.
+
+  ## Examples
+
+      {:ok, info} = Sprites.get_sprite(client, "my-sprite")
+  """
+  @spec get_sprite(client(), String.t()) :: {:ok, map()} | {:error, term()}
+  def get_sprite(client, name) do
+    Client.get_sprite(client, name)
+  end
+
+  @doc """
+  Triggers an upgrade for a sprite.
+
+  ## Examples
+
+      :ok = Sprites.upgrade(sprite)
+  """
+  @spec upgrade(sprite()) :: :ok | {:error, term()}
+  def upgrade(%Sprite{client: client, name: name}) do
+    Client.upgrade_sprite(client, name)
+  end
+
+  @doc """
+  Updates URL settings for a sprite.
+
+  ## Examples
+
+      :ok = Sprites.update_url_settings(sprite, %{auth: "bearer"})
+  """
+  @spec update_url_settings(sprite(), map()) :: :ok | {:error, term()}
+  def update_url_settings(%Sprite{client: client, name: name}, settings) do
+    Client.update_url_settings(client, name, settings)
+  end
+
+  @doc """
+  Lists all sprites.
+
+  ## Options
+
+    * `:prefix` - Filter by name prefix
+
+  ## Examples
+
+      {:ok, sprites} = Sprites.list(client)
+      {:ok, sprites} = Sprites.list(client, prefix: "test-")
+  """
+  @spec list(client(), keyword()) :: {:ok, [map()]} | {:error, term()}
+  def list(client, opts \\ []) do
+    Client.list_sprites(client, opts)
+  end
 end

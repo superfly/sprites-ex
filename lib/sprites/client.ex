@@ -112,6 +112,66 @@ defmodule Sprites.Client do
     end
   end
 
+  @doc """
+  Gets detailed information about a sprite.
+  """
+  @spec get_sprite(t(), String.t()) :: {:ok, map()} | {:error, term()}
+  def get_sprite(client, name) do
+    case Req.get(client.req, url: "/v1/sprites/#{URI.encode(name)}") do
+      {:ok, %{status: status, body: body}} when status in 200..299 ->
+        {:ok, body}
+
+      {:ok, %{status: 404, body: body}} ->
+        {:error, {:not_found, body}}
+
+      {:ok, %{status: status, body: body}} ->
+        {:error, {:api_error, status, body}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  @doc """
+  Triggers an upgrade for a sprite.
+  """
+  @spec upgrade_sprite(t(), String.t()) :: :ok | {:error, term()}
+  def upgrade_sprite(client, name) do
+    case Req.post(client.req, url: "/v1/sprites/#{URI.encode(name)}/upgrade") do
+      {:ok, %{status: status}} when status in 200..299 ->
+        :ok
+
+      {:ok, %{status: status, body: body}} ->
+        {:error, {:api_error, status, body}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  @doc """
+  Updates URL settings for a sprite.
+
+  ## Options
+
+    * `:auth` - Authentication mode for the URL (e.g., "bearer", "none")
+  """
+  @spec update_url_settings(t(), String.t(), map()) :: :ok | {:error, term()}
+  def update_url_settings(client, name, settings) do
+    body = %{url_settings: settings}
+
+    case Req.put(client.req, url: "/v1/sprites/#{URI.encode(name)}/url-settings", json: body) do
+      {:ok, %{status: status}} when status in 200..299 ->
+        :ok
+
+      {:ok, %{status: status, body: body}} ->
+        {:error, {:api_error, status, body}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
   defp normalize_url(url) do
     String.trim_trailing(url, "/")
   end
