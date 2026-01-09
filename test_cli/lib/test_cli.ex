@@ -36,32 +36,42 @@ defmodule SpritesTestCli do
         ["checkpoint" | checkpoint_args] ->
           handle_checkpoint(client, opts, checkpoint_args, logger)
 
-        ["fs-read", path] ->
-          handle_fs_read(client, opts, path, logger)
+        # Filesystem commands with flag-based arguments for test harness compatibility
+        ["fs-read" | fs_args] ->
+          fs_opts = parse_fs_flags(fs_args)
+          handle_fs_read(client, opts, fs_opts[:path], logger)
 
-        ["fs-write", path, data] ->
-          handle_fs_write(client, opts, path, data, logger)
+        ["fs-write" | fs_args] ->
+          fs_opts = parse_fs_flags(fs_args)
+          handle_fs_write(client, opts, fs_opts[:path], fs_opts[:content] || "", logger)
 
-        ["fs-list", path] ->
-          handle_fs_list(client, opts, path, logger)
+        ["fs-list" | fs_args] ->
+          fs_opts = parse_fs_flags(fs_args)
+          handle_fs_list(client, opts, fs_opts[:path] || ".", logger)
 
-        ["fs-stat", path] ->
-          handle_fs_stat(client, opts, path, logger)
+        ["fs-stat" | fs_args] ->
+          fs_opts = parse_fs_flags(fs_args)
+          handle_fs_stat(client, opts, fs_opts[:path], logger)
 
-        ["fs-mkdir", path] ->
-          handle_fs_mkdir(client, opts, path, logger)
+        ["fs-mkdir" | fs_args] ->
+          fs_opts = parse_fs_flags(fs_args)
+          handle_fs_mkdir(client, opts, fs_opts[:path], fs_opts[:parents] || false, logger)
 
-        ["fs-rm", path] ->
-          handle_fs_rm(client, opts, path, logger)
+        ["fs-rm" | fs_args] ->
+          fs_opts = parse_fs_flags(fs_args)
+          handle_fs_rm(client, opts, fs_opts[:path], fs_opts[:recursive] || false, logger)
 
-        ["fs-rename", source, dest] ->
-          handle_fs_rename(client, opts, source, dest, logger)
+        ["fs-rename" | fs_args] ->
+          fs_opts = parse_fs_flags(fs_args)
+          handle_fs_rename(client, opts, fs_opts[:old], fs_opts[:new], logger)
 
-        ["fs-copy", source, dest] ->
-          handle_fs_copy(client, opts, source, dest, logger)
+        ["fs-copy" | fs_args] ->
+          fs_opts = parse_fs_flags(fs_args)
+          handle_fs_copy(client, opts, fs_opts[:src], fs_opts[:dst], logger)
 
-        ["fs-chmod", path, mode] ->
-          handle_fs_chmod(client, opts, path, mode, logger)
+        ["fs-chmod" | fs_args] ->
+          fs_opts = parse_fs_flags(fs_args)
+          handle_fs_chmod(client, opts, fs_opts[:path], fs_opts[:mode], fs_opts[:recursive] || false, logger)
 
         [cmd | cmd_args] ->
           handle_exec(client, opts, cmd, cmd_args, logger)
@@ -149,6 +159,52 @@ defmodule SpritesTestCli do
   end
 
   defp parse_args([], opts, remaining), do: {opts, remaining}
+
+  # Parse filesystem command flags (Go-style flags like -path, -content, etc.)
+  defp parse_fs_flags(args), do: parse_fs_flags(args, %{})
+
+  defp parse_fs_flags(["-path", path | rest], acc) do
+    parse_fs_flags(rest, Map.put(acc, :path, path))
+  end
+
+  defp parse_fs_flags(["-content", content | rest], acc) do
+    parse_fs_flags(rest, Map.put(acc, :content, content))
+  end
+
+  defp parse_fs_flags(["-parents" | rest], acc) do
+    parse_fs_flags(rest, Map.put(acc, :parents, true))
+  end
+
+  defp parse_fs_flags(["-recursive" | rest], acc) do
+    parse_fs_flags(rest, Map.put(acc, :recursive, true))
+  end
+
+  defp parse_fs_flags(["-old", old | rest], acc) do
+    parse_fs_flags(rest, Map.put(acc, :old, old))
+  end
+
+  defp parse_fs_flags(["-new", new | rest], acc) do
+    parse_fs_flags(rest, Map.put(acc, :new, new))
+  end
+
+  defp parse_fs_flags(["-src", src | rest], acc) do
+    parse_fs_flags(rest, Map.put(acc, :src, src))
+  end
+
+  defp parse_fs_flags(["-dst", dst | rest], acc) do
+    parse_fs_flags(rest, Map.put(acc, :dst, dst))
+  end
+
+  defp parse_fs_flags(["-mode", mode | rest], acc) do
+    parse_fs_flags(rest, Map.put(acc, :mode, mode))
+  end
+
+  defp parse_fs_flags([_ | rest], acc) do
+    # Skip unknown flags
+    parse_fs_flags(rest, acc)
+  end
+
+  defp parse_fs_flags([], acc), do: acc
 
   defp default_opts do
     %{
@@ -501,6 +557,7 @@ defmodule SpritesTestCli do
 
     case Sprites.Filesystem.write(fs, path, data) do
       :ok ->
+        IO.puts(Jason.encode!(%{status: "written", path: path}))
         log_event(logger, "fs_write_completed", %{path: path})
         :ok
 
@@ -555,16 +612,18 @@ defmodule SpritesTestCli do
     end
   end
 
-  defp handle_fs_mkdir(client, opts, path, logger) do
+  defp handle_fs_mkdir(client, opts, path, parents, logger) do
     sprite_name = require_sprite(opts)
     sprite = Sprites.sprite(client, sprite_name)
     working_dir = opts[:dir] || "/"
     fs = Sprites.filesystem(sprite, working_dir)
 
-    log_event(logger, "fs_mkdir_start", %{sprite: sprite_name, path: path})
+    log_event(logger, "fs_mkdir_start", %{sprite: sprite_name, path: path, parents: parents})
 
+    # Always use mkdir_p for simplicity (supports parents mode)
     case Sprites.Filesystem.mkdir_p(fs, path) do
       :ok ->
+        IO.puts(Jason.encode!(%{status: "created", path: path}))
         log_event(logger, "fs_mkdir_completed", %{path: path})
         :ok
 
@@ -575,16 +634,25 @@ defmodule SpritesTestCli do
     end
   end
 
-  defp handle_fs_rm(client, opts, path, logger) do
+  defp handle_fs_rm(client, opts, path, recursive, logger) do
     sprite_name = require_sprite(opts)
     sprite = Sprites.sprite(client, sprite_name)
     working_dir = opts[:dir] || "/"
     fs = Sprites.filesystem(sprite, working_dir)
 
-    log_event(logger, "fs_rm_start", %{sprite: sprite_name, path: path})
+    log_event(logger, "fs_rm_start", %{sprite: sprite_name, path: path, recursive: recursive})
 
-    case Sprites.Filesystem.rm_rf(fs, path) do
+    # Use rm_rf for recursive, rm for single file
+    result =
+      if recursive do
+        Sprites.Filesystem.rm_rf(fs, path)
+      else
+        Sprites.Filesystem.rm(fs, path)
+      end
+
+    case result do
       :ok ->
+        IO.puts(Jason.encode!(%{status: "removed", path: path}))
         log_event(logger, "fs_rm_completed", %{path: path})
         :ok
 
@@ -605,6 +673,7 @@ defmodule SpritesTestCli do
 
     case Sprites.Filesystem.rename(fs, source, dest) do
       :ok ->
+        IO.puts(Jason.encode!(%{status: "renamed", source: source, dest: dest}))
         log_event(logger, "fs_rename_completed", %{source: source, dest: dest})
         :ok
 
@@ -630,6 +699,7 @@ defmodule SpritesTestCli do
 
     case Sprites.Filesystem.cp(fs, source, dest) do
       :ok ->
+        IO.puts(Jason.encode!(%{status: "copied", source: source, dest: dest}))
         log_event(logger, "fs_copy_completed", %{source: source, dest: dest})
         :ok
 
@@ -640,7 +710,7 @@ defmodule SpritesTestCli do
     end
   end
 
-  defp handle_fs_chmod(client, opts, path, mode_str, logger) do
+  defp handle_fs_chmod(client, opts, path, mode_str, recursive, logger) do
     sprite_name = require_sprite(opts)
     sprite = Sprites.sprite(client, sprite_name)
     working_dir = opts[:dir] || "/"
@@ -665,10 +735,11 @@ defmodule SpritesTestCli do
           String.to_integer(mode_str)
       end
 
-    log_event(logger, "fs_chmod_start", %{sprite: sprite_name, path: path, mode: mode})
+    log_event(logger, "fs_chmod_start", %{sprite: sprite_name, path: path, mode: mode, recursive: recursive})
 
-    case Sprites.Filesystem.chmod(fs, path, mode) do
+    case Sprites.Filesystem.chmod(fs, path, mode, recursive: recursive) do
       :ok ->
+        IO.puts(Jason.encode!(%{status: "chmod", path: path, mode: mode_str}))
         log_event(logger, "fs_chmod_completed", %{path: path, mode: mode})
         :ok
 
