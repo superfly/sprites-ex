@@ -9,8 +9,10 @@ defmodule SpritesTestCli do
 
     token =
       System.get_env("SPRITES_TEST_TOKEN") ||
-        (IO.puts(:stderr, "Error: SPRITES_TEST_TOKEN environment variable not set")
-         System.halt(1))
+        (
+          IO.puts(:stderr, "Error: SPRITES_TEST_TOKEN environment variable not set")
+          System.halt(1)
+        )
 
     base_url = opts[:base_url] || "https://api.sprites.dev"
     client = Sprites.new(token, base_url: base_url)
@@ -33,6 +35,33 @@ defmodule SpritesTestCli do
 
         ["checkpoint" | checkpoint_args] ->
           handle_checkpoint(client, opts, checkpoint_args, logger)
+
+        ["fs-read", path] ->
+          handle_fs_read(client, opts, path, logger)
+
+        ["fs-write", path, data] ->
+          handle_fs_write(client, opts, path, data, logger)
+
+        ["fs-list", path] ->
+          handle_fs_list(client, opts, path, logger)
+
+        ["fs-stat", path] ->
+          handle_fs_stat(client, opts, path, logger)
+
+        ["fs-mkdir", path] ->
+          handle_fs_mkdir(client, opts, path, logger)
+
+        ["fs-rm", path] ->
+          handle_fs_rm(client, opts, path, logger)
+
+        ["fs-rename", source, dest] ->
+          handle_fs_rename(client, opts, source, dest, logger)
+
+        ["fs-copy", source, dest] ->
+          handle_fs_copy(client, opts, source, dest, logger)
+
+        ["fs-chmod", path, mode] ->
+          handle_fs_chmod(client, opts, path, mode, logger)
 
         [cmd | cmd_args] ->
           handle_exec(client, opts, cmd, cmd_args, logger)
@@ -163,6 +192,7 @@ defmodule SpritesTestCli do
   end
 
   defp format_timeout(nil), do: ""
+
   defp format_timeout(ms) when is_integer(ms) do
     cond do
       rem(ms, 3_600_000) == 0 -> "#{div(ms, 3_600_000)}h"
@@ -250,7 +280,11 @@ defmodule SpritesTestCli do
           {:error, :invalid_schema}
         else
           policy = Sprites.Policy.from_map(data)
-          log_event(logger, "policy_set_start", %{sprite: sprite.name, rules_count: length(policy.rules)})
+
+          log_event(logger, "policy_set_start", %{
+            sprite: sprite.name,
+            rules_count: length(policy.rules)
+          })
 
           case Sprites.update_network_policy(sprite, policy) do
             :ok ->
@@ -273,12 +307,13 @@ defmodule SpritesTestCli do
 
   defp policy_to_json(policy) do
     %{
-      "rules" => Enum.map(policy.rules, fn rule ->
-        %{}
-        |> maybe_put_json("domain", rule.domain)
-        |> maybe_put_json("action", rule.action)
-        |> maybe_put_json("include", rule.include)
-      end)
+      "rules" =>
+        Enum.map(policy.rules, fn rule ->
+          %{}
+          |> maybe_put_json("domain", rule.domain)
+          |> maybe_put_json("action", rule.action)
+          |> maybe_put_json("include", rule.include)
+        end)
     }
     |> Jason.encode!(pretty: true)
   end
@@ -360,6 +395,7 @@ defmodule SpritesTestCli do
           output = Jason.encode!(Sprites.StreamMessage.to_map(msg))
           IO.puts(output)
         end)
+
         log_event(logger, "checkpoint_create_completed", %{sprite: sprite.name})
         :ok
 
@@ -371,7 +407,10 @@ defmodule SpritesTestCli do
   end
 
   defp handle_checkpoint_restore(sprite, checkpoint_id, logger) do
-    log_event(logger, "checkpoint_restore_start", %{sprite: sprite.name, checkpoint: checkpoint_id})
+    log_event(logger, "checkpoint_restore_start", %{
+      sprite: sprite.name,
+      checkpoint: checkpoint_id
+    })
 
     case Sprites.restore_checkpoint(sprite, checkpoint_id) do
       {:ok, messages} ->
@@ -380,7 +419,12 @@ defmodule SpritesTestCli do
           output = Jason.encode!(Sprites.StreamMessage.to_map(msg))
           IO.puts(output)
         end)
-        log_event(logger, "checkpoint_restore_completed", %{sprite: sprite.name, checkpoint: checkpoint_id})
+
+        log_event(logger, "checkpoint_restore_completed", %{
+          sprite: sprite.name,
+          checkpoint: checkpoint_id
+        })
+
         :ok
 
       {:error, reason} ->
@@ -405,7 +449,8 @@ defmodule SpritesTestCli do
   defp checkpoint_to_map(checkpoint) do
     %{
       "id" => checkpoint.id,
-      "create_time" => if(checkpoint.create_time, do: DateTime.to_iso8601(checkpoint.create_time), else: nil),
+      "create_time" =>
+        if(checkpoint.create_time, do: DateTime.to_iso8601(checkpoint.create_time), else: nil),
       "history" => checkpoint.history,
       "comment" => checkpoint.comment
     }
@@ -415,15 +460,232 @@ defmodule SpritesTestCli do
 
   defp require_sprite(opts) do
     opts[:sprite] ||
-      (IO.puts(:stderr, "Error: -sprite flag is required")
-       System.halt(1))
+      (
+        IO.puts(:stderr, "Error: -sprite flag is required")
+        System.halt(1)
+      )
+  end
+
+  # ============================================================================
+  # Filesystem Commands
+  # ============================================================================
+
+  defp handle_fs_read(client, opts, path, logger) do
+    sprite_name = require_sprite(opts)
+    sprite = Sprites.sprite(client, sprite_name)
+    working_dir = opts[:dir] || "/"
+    fs = Sprites.filesystem(sprite, working_dir)
+
+    log_event(logger, "fs_read_start", %{sprite: sprite_name, path: path})
+
+    case Sprites.Filesystem.read(fs, path) do
+      {:ok, content} ->
+        log_event(logger, "fs_read_completed", %{path: path, size: byte_size(content)})
+        IO.write(content)
+        :ok
+
+      {:error, reason} ->
+        log_event(logger, "fs_read_failed", %{path: path, error: inspect(reason)})
+        IO.puts(:stderr, "Error reading file: #{inspect(reason)}")
+        {:error, reason}
+    end
+  end
+
+  defp handle_fs_write(client, opts, path, data, logger) do
+    sprite_name = require_sprite(opts)
+    sprite = Sprites.sprite(client, sprite_name)
+    working_dir = opts[:dir] || "/"
+    fs = Sprites.filesystem(sprite, working_dir)
+
+    log_event(logger, "fs_write_start", %{sprite: sprite_name, path: path, size: byte_size(data)})
+
+    case Sprites.Filesystem.write(fs, path, data) do
+      :ok ->
+        log_event(logger, "fs_write_completed", %{path: path})
+        :ok
+
+      {:error, reason} ->
+        log_event(logger, "fs_write_failed", %{path: path, error: inspect(reason)})
+        IO.puts(:stderr, "Error writing file: #{inspect(reason)}")
+        {:error, reason}
+    end
+  end
+
+  defp handle_fs_list(client, opts, path, logger) do
+    sprite_name = require_sprite(opts)
+    sprite = Sprites.sprite(client, sprite_name)
+    working_dir = opts[:dir] || "/"
+    fs = Sprites.filesystem(sprite, working_dir)
+
+    log_event(logger, "fs_list_start", %{sprite: sprite_name, path: path})
+
+    case Sprites.Filesystem.ls(fs, path) do
+      {:ok, entries} ->
+        log_event(logger, "fs_list_completed", %{path: path, count: length(entries)})
+        output = Jason.encode!(entries, pretty: true)
+        IO.puts(output)
+        :ok
+
+      {:error, reason} ->
+        log_event(logger, "fs_list_failed", %{path: path, error: inspect(reason)})
+        IO.puts(:stderr, "Error listing directory: #{inspect(reason)}")
+        {:error, reason}
+    end
+  end
+
+  defp handle_fs_stat(client, opts, path, logger) do
+    sprite_name = require_sprite(opts)
+    sprite = Sprites.sprite(client, sprite_name)
+    working_dir = opts[:dir] || "/"
+    fs = Sprites.filesystem(sprite, working_dir)
+
+    log_event(logger, "fs_stat_start", %{sprite: sprite_name, path: path})
+
+    case Sprites.Filesystem.stat(fs, path) do
+      {:ok, stat} ->
+        log_event(logger, "fs_stat_completed", %{path: path})
+        output = Jason.encode!(stat, pretty: true)
+        IO.puts(output)
+        :ok
+
+      {:error, reason} ->
+        log_event(logger, "fs_stat_failed", %{path: path, error: inspect(reason)})
+        IO.puts(:stderr, "Error getting file info: #{inspect(reason)}")
+        {:error, reason}
+    end
+  end
+
+  defp handle_fs_mkdir(client, opts, path, logger) do
+    sprite_name = require_sprite(opts)
+    sprite = Sprites.sprite(client, sprite_name)
+    working_dir = opts[:dir] || "/"
+    fs = Sprites.filesystem(sprite, working_dir)
+
+    log_event(logger, "fs_mkdir_start", %{sprite: sprite_name, path: path})
+
+    case Sprites.Filesystem.mkdir_p(fs, path) do
+      :ok ->
+        log_event(logger, "fs_mkdir_completed", %{path: path})
+        :ok
+
+      {:error, reason} ->
+        log_event(logger, "fs_mkdir_failed", %{path: path, error: inspect(reason)})
+        IO.puts(:stderr, "Error creating directory: #{inspect(reason)}")
+        {:error, reason}
+    end
+  end
+
+  defp handle_fs_rm(client, opts, path, logger) do
+    sprite_name = require_sprite(opts)
+    sprite = Sprites.sprite(client, sprite_name)
+    working_dir = opts[:dir] || "/"
+    fs = Sprites.filesystem(sprite, working_dir)
+
+    log_event(logger, "fs_rm_start", %{sprite: sprite_name, path: path})
+
+    case Sprites.Filesystem.rm_rf(fs, path) do
+      :ok ->
+        log_event(logger, "fs_rm_completed", %{path: path})
+        :ok
+
+      {:error, reason} ->
+        log_event(logger, "fs_rm_failed", %{path: path, error: inspect(reason)})
+        IO.puts(:stderr, "Error removing file/directory: #{inspect(reason)}")
+        {:error, reason}
+    end
+  end
+
+  defp handle_fs_rename(client, opts, source, dest, logger) do
+    sprite_name = require_sprite(opts)
+    sprite = Sprites.sprite(client, sprite_name)
+    working_dir = opts[:dir] || "/"
+    fs = Sprites.filesystem(sprite, working_dir)
+
+    log_event(logger, "fs_rename_start", %{sprite: sprite_name, source: source, dest: dest})
+
+    case Sprites.Filesystem.rename(fs, source, dest) do
+      :ok ->
+        log_event(logger, "fs_rename_completed", %{source: source, dest: dest})
+        :ok
+
+      {:error, reason} ->
+        log_event(logger, "fs_rename_failed", %{
+          source: source,
+          dest: dest,
+          error: inspect(reason)
+        })
+
+        IO.puts(:stderr, "Error renaming file: #{inspect(reason)}")
+        {:error, reason}
+    end
+  end
+
+  defp handle_fs_copy(client, opts, source, dest, logger) do
+    sprite_name = require_sprite(opts)
+    sprite = Sprites.sprite(client, sprite_name)
+    working_dir = opts[:dir] || "/"
+    fs = Sprites.filesystem(sprite, working_dir)
+
+    log_event(logger, "fs_copy_start", %{sprite: sprite_name, source: source, dest: dest})
+
+    case Sprites.Filesystem.cp(fs, source, dest) do
+      :ok ->
+        log_event(logger, "fs_copy_completed", %{source: source, dest: dest})
+        :ok
+
+      {:error, reason} ->
+        log_event(logger, "fs_copy_failed", %{source: source, dest: dest, error: inspect(reason)})
+        IO.puts(:stderr, "Error copying file: #{inspect(reason)}")
+        {:error, reason}
+    end
+  end
+
+  defp handle_fs_chmod(client, opts, path, mode_str, logger) do
+    sprite_name = require_sprite(opts)
+    sprite = Sprites.sprite(client, sprite_name)
+    working_dir = opts[:dir] || "/"
+    fs = Sprites.filesystem(sprite, working_dir)
+
+    # Parse mode - support both octal strings (like "755") and integer formats
+    mode =
+      cond do
+        String.starts_with?(mode_str, "0o") ->
+          {val, _} = Integer.parse(String.trim_leading(mode_str, "0o"), 8)
+          val
+
+        String.starts_with?(mode_str, "0") and String.length(mode_str) > 1 ->
+          {val, _} = Integer.parse(String.trim_leading(mode_str, "0"), 8)
+          val
+
+        String.match?(mode_str, ~r/^[0-7]+$/) ->
+          {val, _} = Integer.parse(mode_str, 8)
+          val
+
+        true ->
+          String.to_integer(mode_str)
+      end
+
+    log_event(logger, "fs_chmod_start", %{sprite: sprite_name, path: path, mode: mode})
+
+    case Sprites.Filesystem.chmod(fs, path, mode) do
+      :ok ->
+        log_event(logger, "fs_chmod_completed", %{path: path, mode: mode})
+        :ok
+
+      {:error, reason} ->
+        log_event(logger, "fs_chmod_failed", %{path: path, error: inspect(reason)})
+        IO.puts(:stderr, "Error changing file permissions: #{inspect(reason)}")
+        {:error, reason}
+    end
   end
 
   defp handle_exec(client, opts, cmd, args, logger) do
     sprite_name =
       opts[:sprite] ||
-        (IO.puts(:stderr, "Error: Sprite name required (-sprite flag)")
-         System.halt(1))
+        (
+          IO.puts(:stderr, "Error: Sprite name required (-sprite flag)")
+          System.halt(1)
+        )
 
     sprite = Sprites.sprite(client, sprite_name)
 
@@ -465,7 +727,12 @@ defmodule SpritesTestCli do
     try do
       {output, exit_code} = Sprites.cmd(sprite, cmd, args, opts)
       IO.write(output)
-      log_event(logger, "command_completed", %{exit_code: exit_code, output_length: byte_size(output)})
+
+      log_event(logger, "command_completed", %{
+        exit_code: exit_code,
+        output_length: byte_size(output)
+      })
+
       {:ok, exit_code}
     rescue
       e in Sprites.Error.TimeoutError ->
@@ -486,7 +753,12 @@ defmodule SpritesTestCli do
     try do
       {output, exit_code} = Sprites.cmd(sprite, cmd, args, opts)
       IO.write(output)
-      log_event(logger, "command_completed", %{exit_code: exit_code, output_length: byte_size(output)})
+
+      log_event(logger, "command_completed", %{
+        exit_code: exit_code,
+        output_length: byte_size(output)
+      })
+
       {:ok, exit_code}
     rescue
       e in Sprites.Error.TimeoutError ->
@@ -629,6 +901,17 @@ defmodule SpritesTestCli do
       checkpoint create [comment]  Create a checkpoint
       checkpoint restore <id>   Restore to a checkpoint
 
+    Filesystem Commands:
+      fs-read <path>            Read file contents
+      fs-write <path> <data>    Write data to file
+      fs-list <path>            List directory contents
+      fs-stat <path>            Get file/directory info
+      fs-mkdir <path>           Create directory (recursive)
+      fs-rm <path>              Remove file/directory (recursive)
+      fs-rename <src> <dst>     Rename/move file
+      fs-copy <src> <dst>       Copy file
+      fs-chmod <path> <mode>    Change file permissions (e.g., 755)
+
     Environment Variables:
       SPRITES_TEST_TOKEN  Authentication token (required)
 
@@ -639,6 +922,9 @@ defmodule SpritesTestCli do
       test-cli -sprite my-sprite policy get
       test-cli -sprite my-sprite checkpoint list
       test-cli -sprite my-sprite checkpoint create "before update"
+      test-cli -sprite my-sprite fs-write /tmp/test.txt "hello world"
+      test-cli -sprite my-sprite fs-read /tmp/test.txt
+      test-cli -sprite my-sprite fs-list /tmp
       test-cli destroy my-sprite
     """)
   end

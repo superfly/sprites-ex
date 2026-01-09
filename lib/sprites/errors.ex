@@ -42,4 +42,22 @@ defmodule Sprites.Error do
       "Operation timed out after #{timeout}ms"
     end
   end
+
+  defmodule FilesystemError do
+    @moduledoc "Raised when a filesystem operation fails."
+    defexception [:reason, :path]
+
+    @impl true
+    def message(%{reason: :enoent, path: path}) do
+      "File or directory not found: #{path}"
+    end
+
+    def message(%{reason: {:api_error, status, body}, path: path}) do
+      "Filesystem error (#{status}) for #{path}: #{inspect(body)}"
+    end
+
+    def message(%{reason: reason, path: path}) do
+      "Filesystem error for #{path}: #{inspect(reason)}"
+    end
+  end
 end

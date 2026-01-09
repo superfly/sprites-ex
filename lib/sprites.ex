@@ -399,6 +399,26 @@ defmodule Sprites do
   end
 
   # ============================================================================
+  # Filesystem API
+  # ============================================================================
+
+  @doc """
+  Creates a filesystem handle for a sprite.
+
+  The filesystem handle provides file operations similar to Elixir's `File` module.
+
+  ## Examples
+
+      fs = Sprites.filesystem(sprite, "/app")
+      {:ok, content} = Sprites.Filesystem.read(fs, "config.json")
+      :ok = Sprites.Filesystem.write(fs, "output.txt", "data")
+  """
+  @spec filesystem(sprite(), String.t()) :: Sprites.Filesystem.t()
+  def filesystem(sprite, working_dir \\ "/") do
+    Sprites.Filesystem.new(sprite, working_dir)
+  end
+
+  # ============================================================================
   # Extended Sprite Management
   # ============================================================================
 
