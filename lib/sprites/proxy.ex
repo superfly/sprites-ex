@@ -91,7 +91,9 @@ defmodule Sprites.Proxy do
           }
 
           # Start acceptor process
-          spawn_link(fn -> accept_loop(self(), listener) end)
+          # Capture the GenServer PID before spawning to ensure messages are sent correctly
+          server = self()
+          spawn_link(fn -> accept_loop(server, listener) end)
 
           {:ok, state}
 
@@ -129,6 +131,9 @@ defmodule Sprites.Proxy do
     defp accept_loop(server, listener) do
       case :gen_tcp.accept(listener) do
         {:ok, socket} ->
+          # Transfer socket ownership to GenServer before casting
+          # This allows the GenServer to then transfer it to the handler process
+          :gen_tcp.controlling_process(socket, server)
           GenServer.cast(server, {:new_connection, socket})
           accept_loop(server, listener)
 
