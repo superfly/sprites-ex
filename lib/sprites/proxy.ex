@@ -113,7 +113,21 @@ defmodule Sprites.Proxy do
     @impl true
     def handle_cast({:new_connection, socket}, state) do
       # Handle new connection in a separate process
-      spawn(fn -> handle_connection(socket, state) end)
+      # We need to spawn first, then transfer socket ownership to the spawned process
+      handler_pid =
+        spawn(fn ->
+          # Wait to receive socket ownership before proceeding
+          receive do
+            :socket_ready -> handle_connection(socket, state)
+          after
+            5000 -> :gen_tcp.close(socket)
+          end
+        end)
+
+      # Transfer socket ownership to handler process
+      :gen_tcp.controlling_process(socket, handler_pid)
+      # Signal handler that socket is ready
+      send(handler_pid, :socket_ready)
       {:noreply, state}
     end
 
