@@ -14,7 +14,7 @@ defmodule Sprites.Command do
   use GenServer
   require Logger
 
-  alias Sprites.{Sprite, Protocol}
+  alias Sprites.{Sprite, Protocol, Error}
 
   defstruct [:ref, :pid, :sprite, :owner, :tty_mode]
 
@@ -180,9 +180,18 @@ defmodule Sprites.Command do
               {:gun_upgrade, ^conn, ^stream_ref, ["websocket"], _headers} ->
                 {:ok, conn, stream_ref}
 
-              {:gun_response, ^conn, ^stream_ref, _is_fin, status, _headers} ->
+              {:gun_response, ^conn, ^stream_ref, is_fin, status, headers} ->
+                # Try to read the response body and parse as structured API error
+                body = read_response_body(conn, stream_ref, is_fin)
                 :gun.close(conn)
-                {:error, {:upgrade_failed, status}}
+
+                case Error.parse_api_error(status, body, headers) do
+                  {:ok, %Error.APIError{} = api_error} ->
+                    {:error, api_error}
+
+                  {:ok, nil} ->
+                    {:error, {:upgrade_failed, status}}
+                end
 
               {:gun_error, ^conn, ^stream_ref, reason} ->
                 :gun.close(conn)
@@ -372,6 +381,22 @@ defmodule Sprites.Command do
     after
       timeout ->
         raise Sprites.Error.TimeoutError, timeout: timeout
+    end
+  end
+
+  # Read the response body from a failed HTTP response
+  defp read_response_body(_conn, _stream_ref, :fin), do: ""
+
+  defp read_response_body(conn, stream_ref, :nofin) do
+    receive do
+      {:gun_data, ^conn, ^stream_ref, :fin, data} ->
+        data
+
+      {:gun_data, ^conn, ^stream_ref, :nofin, data} ->
+        data <> read_response_body(conn, stream_ref, :nofin)
+    after
+      5_000 ->
+        ""
     end
   end
 end
