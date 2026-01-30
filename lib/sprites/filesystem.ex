@@ -577,9 +577,8 @@ defmodule Sprites.Filesystem do
   # Private Helpers
   # ============================================================================
 
-  defp build_url(_fs, endpoint, params) do
-    query = URI.encode_query(params)
-    "#{endpoint}?#{query}"
+  defp build_url(fs, endpoint, params) do
+    Sprites.Sprite.path(fs.sprite, endpoint, params)
   end
 
   defp resolve_path(_fs, "/" <> _ = absolute_path), do: absolute_path
