@@ -39,6 +39,11 @@ defmodule Sprites.Sprite do
 
   @doc """
   Builds the WebSocket URL for command execution.
+
+  When `opts[:session_id]` is set, builds an attach URL of the form
+  `/v1/sprites/:name/exec/:session_id` (matching the sprites-go and
+  sprites-py SDKs). Without `:session_id`, builds the spawn URL with
+  command/args as query params.
   """
   @spec exec_url(t(), String.t(), [String.t()], keyword()) :: String.t()
   def exec_url(%__MODULE__{client: client, name: name}, command, args, opts) do
@@ -46,7 +51,12 @@ defmodule Sprites.Sprite do
       client.base_url
       |> String.replace(~r/^http/, "ws")
 
-    path = "/v1/sprites/#{URI.encode(name)}/exec"
+    path =
+      case Keyword.get(opts, :session_id) do
+        nil -> "/v1/sprites/#{URI.encode(name)}/exec"
+        sid -> "/v1/sprites/#{URI.encode(name)}/exec/#{URI.encode(sid)}"
+      end
+
     query_params = build_query_params(command, args, opts)
 
     "#{base}#{path}?#{URI.encode_query(query_params)}"
@@ -81,13 +91,23 @@ defmodule Sprites.Sprite do
   end
 
   defp build_query_params(command, args, opts) do
-    [{"path", command} | Enum.map([command | args], &{"cmd", &1})]
-    |> add_stdin_param(opts)
-    |> add_dir_param(opts)
-    |> add_env_params(opts)
-    |> add_tty_params(opts)
-    |> add_detachable_param(opts)
-    |> add_session_id_param(opts)
+    # When attaching to an existing session (`:session_id` set), the server
+    # ignores cmd/path/env/dir/detachable — they belong to the original spawn.
+    # Only stdin/tty are meaningful for the attach side.
+    case Keyword.get(opts, :session_id) do
+      nil ->
+        [{"path", command} | Enum.map([command | args], &{"cmd", &1})]
+        |> add_stdin_param(opts)
+        |> add_dir_param(opts)
+        |> add_env_params(opts)
+        |> add_tty_params(opts)
+        |> add_detachable_param(opts)
+
+      _session_id ->
+        []
+        |> add_stdin_param(opts)
+        |> add_tty_params(opts)
+    end
   end
 
   defp add_stdin_param(params, opts) do
@@ -127,10 +147,4 @@ defmodule Sprites.Sprite do
     end
   end
 
-  defp add_session_id_param(params, opts) do
-    case Keyword.get(opts, :session_id) do
-      nil -> params
-      session_id -> [{"session_id", session_id} | params]
-    end
-  end
 end
