@@ -9,7 +9,7 @@ defmodule Sprites.Protocol do
     * 0 - stdin (client -> server)
     * 1 - stdout (server -> client)
     * 2 - stderr (server -> client)
-    * 3 - exit (server -> client, followed by 4-byte big-endian exit code)
+    * 3 - exit (server -> client, followed by a 1-byte exit code)
     * 4 - stdin EOF (client -> server)
 
   ## TTY Mode Protocol
@@ -40,7 +40,7 @@ defmodule Sprites.Protocol do
   @spec decode(binary()) :: decoded()
   def decode(<<@stdout_id, payload::binary>>), do: {:stdout, payload}
   def decode(<<@stderr_id, payload::binary>>), do: {:stderr, payload}
-  def decode(<<@exit_id, code::big-unsigned-32>>), do: {:exit, code}
+  def decode(<<@exit_id, code::unsigned-8>>), do: {:exit, code}
   def decode(<<@stdin_eof_id>>), do: {:stdin_eof, nil}
   def decode(data), do: {:unknown, data}
 

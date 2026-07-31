@@ -521,7 +521,7 @@ defmodule Sprites.Command do
         send(owner, {:port, %{ref: ref}, port})
         {:noreply, state}
 
-      {:ok, %{"type" => "exit", "code" => code}} ->
+      {:ok, %{"type" => "exit", "exit_code" => code}} ->
         if state.using_control do
           send(owner, {:exit, %{ref: ref}, code})
           {:noreply, %{state | exit_code: code}}
