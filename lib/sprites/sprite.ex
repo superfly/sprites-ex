@@ -53,6 +53,26 @@ defmodule Sprites.Sprite do
   end
 
   @doc """
+  Builds the WebSocket URL for the control endpoint.
+  """
+  @spec control_url(t()) :: String.t()
+  def control_url(%__MODULE__{client: client, name: name}) do
+    base =
+      client.base_url
+      |> String.replace(~r/^http/, "ws")
+
+    "#{base}/v1/sprites/#{URI.encode(name)}/control"
+  end
+
+  @doc """
+  Returns whether control mode is enabled for this sprite's client.
+  """
+  @spec control_mode?(t()) :: boolean()
+  def control_mode?(%__MODULE__{client: client}) do
+    client.control_mode
+  end
+
+  @doc """
   Returns the authorization token for this sprite's client.
   """
   @spec token(t()) :: String.t()

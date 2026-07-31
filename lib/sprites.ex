@@ -42,11 +42,13 @@ defmodule Sprites do
 
     * `:base_url` - API base URL (default: "https://api.sprites.dev")
     * `:timeout` - HTTP timeout in milliseconds (default: 30_000)
+    * `:control_mode` - Enable control mode for multiplexed exec over a single WebSocket per sprite (default: false)
 
   ## Examples
 
       client = Sprites.new("my-token")
       client = Sprites.new("my-token", base_url: "https://custom.api.dev")
+      client = Sprites.new("my-token", control_mode: true)
   """
   @spec new(String.t(), keyword()) :: client()
   def new(token, opts \\ []) do

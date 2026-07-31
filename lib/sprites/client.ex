@@ -7,13 +7,14 @@ defmodule Sprites.Client do
   @default_timeout 30_000
   @create_timeout 120_000
 
-  defstruct [:token, :base_url, :timeout, :req]
+  defstruct [:token, :base_url, :timeout, :req, control_mode: false]
 
   @type t :: %__MODULE__{
           token: String.t(),
           base_url: String.t(),
           timeout: non_neg_integer(),
-          req: Req.Request.t()
+          req: Req.Request.t(),
+          control_mode: boolean()
         }
 
   @doc """
@@ -23,11 +24,13 @@ defmodule Sprites.Client do
 
     * `:base_url` - API base URL (default: "https://api.sprites.dev")
     * `:timeout` - HTTP timeout in milliseconds (default: 30_000)
+    * `:control_mode` - Enable control mode for multiplexed exec over a single WebSocket (default: false)
   """
   @spec new(String.t(), keyword()) :: t()
   def new(token, opts \\ []) do
     base_url = Keyword.get(opts, :base_url, @default_base_url) |> normalize_url()
     timeout = Keyword.get(opts, :timeout, @default_timeout)
+    control_mode = Keyword.get(opts, :control_mode, false)
 
     req =
       Req.new(
@@ -40,7 +43,8 @@ defmodule Sprites.Client do
       token: token,
       base_url: base_url,
       timeout: timeout,
-      req: req
+      req: req,
+      control_mode: control_mode
     }
   end
 
