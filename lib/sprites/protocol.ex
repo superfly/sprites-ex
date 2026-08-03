@@ -9,7 +9,7 @@ defmodule Sprites.Protocol do
     * 0 - stdin (client -> server)
     * 1 - stdout (server -> client)
     * 2 - stderr (server -> client)
-    * 3 - exit (server -> client, followed by a 1-byte exit code)
+    * 3 - exit (server -> client, first payload byte is the exit code; defaults to 0)
     * 4 - stdin EOF (client -> server)
 
   ## TTY Mode Protocol
@@ -33,14 +33,15 @@ defmodule Sprites.Protocol do
   Returns a tuple of `{stream_type, payload}` where:
     * `{:stdout, binary}` - stdout data
     * `{:stderr, binary}` - stderr data
-    * `{:exit, integer}` - exit code
+    * `{:exit, integer}` - first payload byte as the exit code (defaults to 0 when omitted)
     * `{:stdin_eof, nil}` - stdin closed
     * `{:unknown, binary}` - unrecognized data
   """
   @spec decode(binary()) :: decoded()
   def decode(<<@stdout_id, payload::binary>>), do: {:stdout, payload}
   def decode(<<@stderr_id, payload::binary>>), do: {:stderr, payload}
-  def decode(<<@exit_id, code::unsigned-8>>), do: {:exit, code}
+  def decode(<<@exit_id, code::unsigned-8, _rest::binary>>), do: {:exit, code}
+  def decode(<<@exit_id>>), do: {:exit, 0}
   def decode(<<@stdin_eof_id>>), do: {:stdin_eof, nil}
   def decode(data), do: {:unknown, data}
 

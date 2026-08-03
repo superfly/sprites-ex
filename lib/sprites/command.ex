@@ -521,7 +521,9 @@ defmodule Sprites.Command do
         send(owner, {:port, %{ref: ref}, port})
         {:noreply, state}
 
-      {:ok, %{"type" => "exit", "exit_code" => code}} ->
+      {:ok, %{"type" => "exit"} = message} ->
+        code = Map.get(message, "exit_code", 0)
+
         if state.using_control do
           send(owner, {:exit, %{ref: ref}, code})
           {:noreply, %{state | exit_code: code}}
@@ -579,8 +581,10 @@ defmodule Sprites.Command do
   defp drain_pending_frames(%{conn: conn} = state) do
     receive do
       {:gun_ws, ^conn, _stream_ref, {:binary, data}} ->
-        {:noreply, state} = handle_binary_frame(data, state)
-        drain_pending_frames(state)
+        case handle_binary_frame(data, state) do
+          {:noreply, state} -> drain_pending_frames(state)
+          {:stop, :normal, state} -> state
+        end
 
       {:gun_ws, ^conn, _stream_ref, {:text, json}} ->
         case handle_text_frame(json, state) do
