@@ -13,6 +13,7 @@ defmodule Sprites.MixProject do
       deps: deps(),
       name: "Sprites",
       description: "Elixir SDK for Sprites code container runtime",
+      package: package(),
       source_url: @source_url,
       docs: docs()
     ]
@@ -35,8 +36,16 @@ defmodule Sprites.MixProject do
 
   defp docs do
     [
-      main: "Sprites-Ex",
+      main: "readme",
+      source_ref: "v#{@version}",
       extras: ["README.md"]
+    ]
+  end
+
+  defp package do
+    [
+      licenses: ["MIT"],
+      links: %{"GitHub" => @source_url}
     ]
   end
 end

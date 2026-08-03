@@ -9,7 +9,7 @@ Add `sprites` to your list of dependencies in `mix.exs`:
 ```elixir
 def deps do
   [
-    {:sprites, git: "https://github.com/superfly/sprites-ex.git"}
+    {:sprites, "~> 0.1.0"}
   ]
 end
 ```
