@@ -146,5 +146,4 @@ defmodule Sprites.Sprite do
       params
     end
   end
-
 end

@@ -7,8 +7,6 @@ defmodule Sprites.ControlPool do
   """
 
   use GenServer
-  require Logger
-
   alias Sprites.ControlConn
 
   @max_pool_size 100
