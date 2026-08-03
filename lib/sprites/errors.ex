@@ -125,8 +125,7 @@ defmodule Sprites.Error do
 
     # Try to parse JSON body
     {error_code, message, limit, window_seconds, retry_after_seconds, current_count,
-     upgrade_available,
-     upgrade_url} =
+     upgrade_available, upgrade_url} =
       case Jason.decode(body) do
         {:ok, data} when is_map(data) ->
           {

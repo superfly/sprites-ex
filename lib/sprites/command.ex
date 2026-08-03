@@ -17,7 +17,6 @@ defmodule Sprites.Command do
   """
 
   use GenServer
-  require Logger
 
   alias Sprites.{Sprite, Protocol, Error, Control, ControlConn}
 

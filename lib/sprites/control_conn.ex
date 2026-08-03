@@ -14,8 +14,6 @@ defmodule Sprites.ControlConn do
   """
 
   use GenServer
-  require Logger
-
   @control_prefix "control:"
 
   # Client API
