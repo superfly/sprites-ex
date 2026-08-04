@@ -5,7 +5,7 @@ defmodule Sprites.Proxy do
   Allows forwarding local ports to remote ports on the sprite.
   """
 
-  alias Sprites.{Client, Sprite}
+  alias Sprites.{Client, ClientSignals, Sprite}
 
   defmodule PortMapping do
     @moduledoc """
@@ -162,10 +162,7 @@ defmodule Sprites.Proxy do
         {:ok, conn} ->
           case :gun.await_up(conn, 10_000) do
             {:ok, _protocol} ->
-              headers = [
-                {"authorization", "Bearer #{state.client.token}"},
-                {"user-agent", "sprites-elixir-sdk/1.0"}
-              ]
+              headers = ClientSignals.auth_headers(state.client.token)
 
               stream_ref = :gun.ws_upgrade(conn, path, headers, %{})
 

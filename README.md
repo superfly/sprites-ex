@@ -166,6 +166,21 @@ export SDK_TEST_COMMAND=/path/to/sprites-ex/test_cli/test-cli
 make test-all
 ```
 
+## Client signals
+
+Requests and WebSocket handshakes carry coarse, privacy-safe
+[`client-signals`](https://github.com/superfly/client-signals) attribution in
+`Fly-Client-*` headers and a `sprites-ex/<version>` User-Agent suffix. These
+signals help Fly.io estimate how much API traffic is human- or agent-driven;
+they are advisory only and are not used for gating or rate-limiting.
+
+Set `SPRITES_CLIENT_SIGNALS=0` to opt out. The values `off`, `false`, `no`, and
+`disabled` are also accepted. When disabled, the SDK still sends its plain
+User-Agent but does not detect or send client signals.
+
+Signals and the opt-out setting are read once, on first SDK use, and cached for
+the lifetime of the BEAM instance.
+
 ## License
 
 MIT

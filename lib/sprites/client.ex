@@ -7,6 +7,8 @@ defmodule Sprites.Client do
   @default_timeout 30_000
   @create_timeout 120_000
 
+  alias Sprites.ClientSignals
+
   defstruct [:token, :base_url, :timeout, :req, control_mode: false]
 
   @type t :: %__MODULE__{
@@ -35,7 +37,7 @@ defmodule Sprites.Client do
     req =
       Req.new(
         base_url: base_url,
-        headers: [{"authorization", "Bearer #{token}"}],
+        headers: ClientSignals.auth_headers(token),
         receive_timeout: timeout
       )
 

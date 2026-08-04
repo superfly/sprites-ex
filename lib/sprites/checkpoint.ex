@@ -5,7 +5,7 @@ defmodule Sprites.Checkpoint do
   Checkpoints allow you to save and restore the state of a sprite.
   """
 
-  alias Sprites.{Client, Sprite}
+  alias Sprites.{Client, ClientSignals, Sprite}
 
   @doc """
   Represents a checkpoint.
@@ -157,10 +157,7 @@ defmodule Sprites.Checkpoint do
 
     body = if comment != "", do: Jason.encode!(%{comment: comment}), else: "{}"
 
-    headers = [
-      {"authorization", "Bearer #{client.token}"},
-      {"content-type", "application/json"}
-    ]
+    headers = ClientSignals.auth_headers(client.token, [{"content-type", "application/json"}])
 
     start_ndjson_stream(url, :post, headers, body)
   end
@@ -189,9 +186,7 @@ defmodule Sprites.Checkpoint do
     url =
       "#{client.base_url}/v1/sprites/#{URI.encode(name)}/checkpoints/#{URI.encode(checkpoint_id)}/restore"
 
-    headers = [
-      {"authorization", "Bearer #{client.token}"}
-    ]
+    headers = ClientSignals.auth_headers(client.token)
 
     start_ndjson_stream(url, :post, headers, nil)
   end

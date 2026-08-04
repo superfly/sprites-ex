@@ -16,6 +16,8 @@ defmodule Sprites.ControlConn do
   use GenServer
   @control_prefix "control:"
 
+  alias Sprites.ClientSignals
+
   # Client API
 
   @doc """
@@ -275,7 +277,7 @@ defmodule Sprites.ControlConn do
         case :gun.await_up(conn, 10_000) do
           {:ok, _protocol} ->
             path = "#{uri.path}?#{uri.query || ""}"
-            headers = [{"authorization", "Bearer #{token}"}]
+            headers = ClientSignals.auth_headers(token)
             stream_ref = :gun.ws_upgrade(conn, path, headers)
 
             receive do
