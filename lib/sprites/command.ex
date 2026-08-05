@@ -18,7 +18,7 @@ defmodule Sprites.Command do
 
   use GenServer
 
-  alias Sprites.{Sprite, Protocol, Error, Control, ControlConn}
+  alias Sprites.{Sprite, Protocol, Error, Control, ControlConn, ClientSignals}
 
   defstruct [:ref, :pid, :sprite, :owner, :tty_mode]
 
@@ -252,7 +252,7 @@ defmodule Sprites.Command do
         case :gun.await_up(conn, 10_000) do
           {:ok, _protocol} ->
             path = "#{uri.path}?#{uri.query || ""}"
-            headers = [{"authorization", "Bearer #{token}"}]
+            headers = ClientSignals.auth_headers(token)
             stream_ref = :gun.ws_upgrade(conn, path, headers)
 
             # Wait for WebSocket upgrade
