@@ -30,9 +30,7 @@ defmodule Sprites.MixProject do
       {:req, "~> 0.5"},
       {:gun, "~> 2.1"},
       {:jason, "~> 1.4"},
-      # Use the tagged Git source until :client_signals is published on Hex.
-      {:client_signals,
-       git: "https://github.com/superfly/client-signals", sparse: "elixir", tag: "v0.4.1"},
+      {:client_signals, "~> 0.4.4"},
       {:ex_doc, "~> 0.31", only: :dev, runtime: false}
     ]
   end
