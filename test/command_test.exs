@@ -67,6 +67,31 @@ defmodule Sprites.CommandTest do
     refute_receive {:error, %{ref: ^ref}, :closed}
   end
 
+  test "reports an error when a close frame arrives without an exit frame" do
+    state = command_state()
+    ref = state.ref
+
+    assert {:stop, :normal, %{exit_code: nil}} =
+             Command.handle_info({:gun_ws, nil, make_ref(), {:close, 1000, ""}}, state)
+
+    assert_receive {:error, %{ref: ^ref}, :closed_before_exit}
+    refute_receive {:exit, %{ref: ^ref}, 0}
+  end
+
+  test "drains a pending direct binary exit before handling a close frame" do
+    state = command_state()
+    ref = state.ref
+    frame = <<Protocol.exit_id(), 0>>
+
+    send(self(), {:gun_ws, nil, make_ref(), {:binary, frame}})
+
+    assert {:stop, :normal, %{exit_code: 0}} =
+             Command.handle_info({:gun_ws, nil, make_ref(), {:close, 1000, ""}}, state)
+
+    assert_receive {:exit, %{ref: ^ref}, 0}
+    refute_receive {:error, %{ref: ^ref}, :closed_before_exit}
+  end
+
   defp command_state(overrides \\ %{}) do
     Map.merge(
       %{

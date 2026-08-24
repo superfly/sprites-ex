@@ -541,8 +541,13 @@ defmodule Sprites.Command do
     end
   end
 
-  defp handle_close_frame(_code, _reason, %{exit_code: nil, owner: owner, ref: ref} = state) do
-    send(owner, {:exit, %{ref: ref}, 0})
+  defp handle_close_frame(_code, _reason, %{exit_code: nil} = state) do
+    state = drain_pending_frames(state)
+
+    if state.exit_code == nil do
+      send(state.owner, {:error, %{ref: state.ref}, :closed_before_exit})
+    end
+
     {:stop, :normal, state}
   end
 
@@ -575,7 +580,7 @@ defmodule Sprites.Command do
   end
 
   # Drain any pending WebSocket frames from the mailbox.
-  # Called on gun_down to pick up exit frames that may have arrived
+  # Called when a connection closes to pick up exit frames that may have arrived
   # but not yet been processed (race between data frames and connection close).
   defp drain_pending_frames(%{conn: conn} = state) do
     receive do
