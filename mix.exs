@@ -12,7 +12,8 @@ defmodule Sprites.MixProject do
       start_permanent: Mix.env() == :prod,
       deps: deps(),
       name: "Sprites",
-      description: "Elixir SDK for Sprites code container runtime",
+      description:
+        "Elixir SDK for Fly.io Sprites: computers for agents. Manage Sprites and run remote commands from Elixir, with APIs that match the language's conventions.",
       package: package(),
       source_url: @source_url,
       docs: docs()
