@@ -104,6 +104,20 @@ Sprites.close_stdin(command)
 Sprites.resize(command, 40, 120)
 ```
 
+#### Provider session identity
+
+Asynchronous callers can opt into `session_info: true` to receive
+`{:session_info, %{ref: ref}, session_id}` from a provider `session_info` control
+frame. Match `ref` against `command.ref`. The ID is normalized to a string;
+duplicate identical frames produce one notification. Other metadata fields are
+not forwarded.
+
+Persist this identity with the intended sandbox and execution before using it
+for later attachment or termination. Missing metadata gives no identity. Invalid
+or conflicting IDs produce an error and close the local command transport;
+this does not confirm that the remote process stopped. Existing callers receive
+no additional messages unless they opt in.
+
 #### Streaming
 
 ```elixir

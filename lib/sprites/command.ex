@@ -9,6 +9,8 @@ defmodule Sprites.Command do
     * `{:stderr, command, data}` - stderr data received
     * `{:exit, command, exit_code}` - command completed
     * `{:error, command, reason}` - error occurred
+    * `{:session_info, %{ref: ref}, session_id}` - provider session identity
+      (only when `session_info: true`; normalized to a string)
 
   Supports two execution modes:
 
@@ -134,6 +136,8 @@ defmodule Sprites.Command do
       owner: owner,
       ref: ref,
       tty_mode: tty_mode,
+      report_session_info: Keyword.get(opts, :session_info, false) == true,
+      session_id: nil,
       conn: nil,
       stream_ref: nil,
       exit_code: nil,
@@ -359,7 +363,7 @@ defmodule Sprites.Command do
       # been delivered but not yet processed.
       state = drain_pending_frames(state)
 
-      if state.exit_code == nil do
+      if state.exit_code == nil and is_nil(Map.get(state, :terminal_error)) do
         # Still no exit code after draining — report as error
         send(state.owner, {:error, %{ref: state.ref}, reason})
       end
@@ -516,6 +520,9 @@ defmodule Sprites.Command do
 
   defp handle_text_frame(json, %{owner: owner, ref: ref} = state) do
     case Jason.decode(json) do
+      {:ok, %{"type" => "session_info"} = message} ->
+        handle_session_info(message, state)
+
       {:ok, %{"type" => "port", "port" => port}} ->
         send(owner, {:port, %{ref: ref}, port})
         {:noreply, state}
@@ -541,10 +548,59 @@ defmodule Sprites.Command do
     end
   end
 
+  # Only provider control metadata establishes this identity. Never infer it
+  # from stdout, process argv, or a session listing that may contain neighbors.
+  defp handle_session_info(_message, %{exit_code: code} = state) when not is_nil(code),
+    do: {:noreply, state}
+
+  defp handle_session_info(message, %{report_session_info: true} = state) do
+    case {normalize_session_id(message["session_id"]), state.session_id} do
+      {{:ok, id}, nil} ->
+        send(state.owner, {:session_info, %{ref: state.ref}, id})
+        {:noreply, %{state | session_id: id}}
+
+      {{:ok, id}, id} ->
+        {:noreply, state}
+
+      {{:ok, _other}, _original} ->
+        session_info_error(state, :conflicting_session_info)
+
+      {:error, _} ->
+        session_info_error(state, :invalid_session_info)
+    end
+  end
+
+  defp handle_session_info(_message, state), do: {:noreply, state}
+
+  defp normalize_session_id(id) when is_integer(id) and id > 0,
+    do: {:ok, Integer.to_string(id)}
+
+  defp normalize_session_id(id) when is_binary(id) and byte_size(id) in 1..256 do
+    if Regex.match?(~r/\A[A-Za-z0-9_-]+\z/, id), do: {:ok, id}, else: :error
+  end
+
+  defp normalize_session_id(_), do: :error
+
+  defp session_info_error(state, reason) do
+    send(state.owner, {:error, %{ref: state.ref}, reason})
+
+    # An active control operation must not be returned to the reusable pool.
+    # The pool monitors this connection and removes it when it closes.
+    state =
+      if state.using_control and is_pid(state.control_conn) do
+        ControlConn.close(state.control_conn)
+        %{state | control_conn: nil}
+      else
+        state
+      end
+
+    {:stop, :normal, Map.put(state, :terminal_error, reason)}
+  end
+
   defp handle_close_frame(_code, _reason, %{exit_code: nil} = state) do
     state = drain_pending_frames(state)
 
-    if state.exit_code == nil do
+    if state.exit_code == nil and is_nil(Map.get(state, :terminal_error)) do
       send(state.owner, {:error, %{ref: state.ref}, :closed_before_exit})
     end
 
