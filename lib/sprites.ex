@@ -143,6 +143,11 @@ defmodule Sprites do
     * `:tty` - Allocate a TTY (default: false)
     * `:tty_rows` - TTY rows (default: 24)
     * `:tty_cols` - TTY columns (default: 80)
+    * `:session_info` - Report provider session identity to the owner as
+      `{:session_info, %{ref: ref}, session_id}` (default: false). The ID is a
+      string. Missing metadata yields no identity; it is never inferred from
+      command output. Invalid or conflicting metadata ends the local command
+      with `:invalid_session_info` or `:conflicting_session_info`, respectively.
 
   ## Examples
 
