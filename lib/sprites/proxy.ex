@@ -147,16 +147,7 @@ defmodule Sprites.Proxy do
       # Connect via gun
       {:ok, {scheme, host, port, path}} = parse_ws_url(ws_url)
 
-      opts =
-        if scheme == :wss do
-          %{
-            protocols: [:http],
-            transport: :tls,
-            tls_opts: [verify: :verify_none]
-          }
-        else
-          %{protocols: [:http]}
-        end
+      opts = Sprites.Transport.gun_opts(Atom.to_string(scheme))
 
       case :gun.open(host, port, opts) do
         {:ok, conn} ->
