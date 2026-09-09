@@ -257,20 +257,7 @@ defmodule Sprites.ControlConn do
     host = String.to_charlist(uri.host)
     port = uri.port || if(uri.scheme == "wss", do: 443, else: 80)
 
-    transport = if uri.scheme == "wss", do: :tls, else: :tcp
-
-    gun_opts = %{
-      protocols: [:http],
-      transport: transport,
-      tls_opts: [
-        verify: :verify_peer,
-        cacerts: :public_key.cacerts_get(),
-        depth: 3,
-        customize_hostname_check: [
-          match_fun: :public_key.pkix_verify_hostname_match_fun(:https)
-        ]
-      ]
-    }
+    gun_opts = Sprites.Transport.gun_opts(uri.scheme)
 
     case :gun.open(host, port, gun_opts) do
       {:ok, conn} ->
