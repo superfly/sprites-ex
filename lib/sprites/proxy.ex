@@ -27,267 +27,323 @@ defmodule Sprites.Proxy do
   end
 
   defmodule Session do
-    @moduledoc """
-    Active proxy session managed by a GenServer.
-    """
+    @moduledoc "An owned, local TCP listener for Sprite proxy connections."
     use GenServer
+    @connect_timeout 10_000
+    @derive {Inspect, except: [:client]}
+    defstruct [
+      :local_port,
+      :remote_port,
+      :remote_host,
+      :listener,
+      :client,
+      :sprite_name,
+      :acceptor,
+      connections: %{},
+      sockets: %{}
+    ]
 
-    defstruct [:local_port, :remote_port, :remote_host, :listener, :client, :sprite_name]
-
-    @type t :: %__MODULE__{
-            local_port: non_neg_integer(),
-            remote_port: non_neg_integer(),
-            remote_host: String.t(),
-            listener: :gen_tcp.socket() | nil,
-            client: Client.t(),
-            sprite_name: String.t()
-          }
-
-    @doc """
-    Starts a proxy session.
-    """
+    @type t :: %__MODULE__{}
     @spec start_link(Client.t(), String.t(), PortMapping.t()) :: GenServer.on_start()
     def start_link(client, sprite_name, mapping) do
       GenServer.start_link(__MODULE__, {client, sprite_name, mapping})
     end
 
-    @doc """
-    Stops a proxy session.
-    """
     @spec stop(pid()) :: :ok
     def stop(pid) do
       GenServer.stop(pid, :normal)
     end
 
-    @doc """
-    Gets the local address the proxy is listening on.
-    """
     @spec local_addr(pid()) ::
             {:ok, :inet.socket_address(), :inet.port_number()} | {:error, term()}
     def local_addr(pid) do
       GenServer.call(pid, :local_addr)
     end
 
-    # GenServer callbacks
-
-    @impl true
     def init({client, sprite_name, %PortMapping{} = mapping}) do
-      # Start listening on local port
+      Process.flag(:trap_exit, true)
+
       case :gen_tcp.listen(mapping.local_port, [
              :binary,
-             {:packet, :raw},
-             {:active, false},
-             {:reuseaddr, true},
-             {:ip, {127, 0, 0, 1}}
+             packet: :raw,
+             active: false,
+             reuseaddr: true,
+             ip: {127, 0, 0, 1},
+             send_timeout: 5_000,
+             send_timeout_close: true
            ]) do
         {:ok, listener} ->
-          state = %__MODULE__{
-            local_port: mapping.local_port,
-            remote_port: mapping.remote_port,
-            remote_host: mapping.remote_host || "localhost",
-            listener: listener,
-            client: client,
-            sprite_name: sprite_name
-          }
+          server = self()
+          acceptor = spawn_link(fn -> accept_loop(server, listener) end)
 
-          # Start acceptor process
-          spawn_link(fn -> accept_loop(self(), listener) end)
-
-          {:ok, state}
+          {:ok,
+           %__MODULE__{
+             local_port: mapping.local_port,
+             remote_port: mapping.remote_port,
+             remote_host: mapping.remote_host || "localhost",
+             listener: listener,
+             client: client,
+             sprite_name: sprite_name,
+             acceptor: acceptor
+           }}
 
         {:error, reason} ->
           {:stop, {:listen_failed, reason}}
       end
     end
 
-    @impl true
-    def handle_call(:local_addr, _from, %{listener: listener} = state) do
-      case :inet.sockname(listener) do
-        {:ok, {addr, port}} -> {:reply, {:ok, addr, port}, state}
-        {:error, reason} -> {:reply, {:error, reason}, state}
+    def handle_call(:local_addr, _from, state) do
+      reply =
+        case :inet.sockname(state.listener) do
+          {:ok, {addr, port}} -> {:ok, addr, port}
+          {:error, reason} -> {:error, reason}
+        end
+
+      {:reply, reply, state}
+    end
+
+    def handle_cast({:new_connection, socket}, state) do
+      case open_connection(state) do
+        {:ok, conn} ->
+          connection = %{
+            socket: socket,
+            stream: nil,
+            phase: :connecting,
+            monitor: Process.monitor(conn),
+            timer: Process.send_after(self(), {:connect_timeout, conn}, @connect_timeout)
+          }
+
+          state = %{
+            state
+            | connections: Map.put(state.connections, conn, connection),
+              sockets: Map.put(state.sockets, socket, conn)
+          }
+
+          {:noreply, state}
+
+        {:error, _reason} ->
+          :gen_tcp.close(socket)
+          {:noreply, state}
       end
     end
 
-    @impl true
-    def handle_cast({:new_connection, socket}, state) do
-      # Handle new connection in a separate process
-      spawn(fn -> handle_connection(socket, state) end)
+    def handle_info({:gun_up, conn, _protocol}, state) do
+      case Map.fetch(state.connections, conn) do
+        {:ok, %{phase: :connecting} = connection} ->
+          path = "/v1/sprites/#{URI.encode(state.sprite_name, &URI.char_unreserved?/1)}/proxy"
+
+          stream =
+            :gun.ws_upgrade(conn, path, ClientSignals.auth_headers(state.client.token), %{flow: 1})
+
+          {:noreply, put_connection(state, conn, %{connection | stream: stream, phase: :upgrade})}
+
+        _other ->
+          {:noreply, state}
+      end
+    end
+
+    def handle_info({:gun_upgrade, conn, stream, ["websocket"], _headers}, state) do
+      case Map.fetch(state.connections, conn) do
+        {:ok, %{stream: ^stream, phase: :upgrade} = connection} ->
+          :gun.ws_send(
+            conn,
+            stream,
+            {:text, Jason.encode!(%{host: state.remote_host, port: state.remote_port})}
+          )
+
+          {:noreply, put_connection(state, conn, %{connection | phase: :initializing})}
+
+        _other ->
+          {:noreply, close_connection(state, conn)}
+      end
+    end
+
+    def handle_info({:gun_ws, conn, stream, {:text, response}}, state) do
+      case Map.fetch(state.connections, conn) do
+        {:ok, %{stream: ^stream, phase: :initializing} = connection} ->
+          case Jason.decode(response) do
+            {:ok, %{"status" => "connected"}} ->
+              Process.cancel_timer(connection.timer)
+
+              case :inet.setopts(connection.socket, active: :once) do
+                :ok ->
+                  :gun.update_flow(conn, stream, 1)
+
+                  {:noreply,
+                   put_connection(state, conn, %{connection | phase: :ready, timer: nil})}
+
+                {:error, _reason} ->
+                  {:noreply, close_connection(state, conn)}
+              end
+
+            _other ->
+              {:noreply, close_connection(state, conn)}
+          end
+
+        _other ->
+          {:noreply, close_connection(state, conn)}
+      end
+    end
+
+    def handle_info({:gun_ws, conn, stream, {:binary, data}}, state) do
+      case Map.fetch(state.connections, conn) do
+        {:ok, %{stream: ^stream, phase: :ready} = connection} ->
+          case :gen_tcp.send(connection.socket, data) do
+            :ok ->
+              :gun.update_flow(conn, stream, 1)
+              {:noreply, state}
+
+            {:error, _reason} ->
+              {:noreply, close_connection(state, conn)}
+          end
+
+        _other ->
+          {:noreply, close_connection(state, conn)}
+      end
+    end
+
+    def handle_info({:tcp, socket, data}, state) do
+      with {:ok, conn} <- Map.fetch(state.sockets, socket),
+           %{stream: stream, phase: :ready} <- Map.fetch!(state.connections, conn),
+           :ok <- send_frame(conn, stream, data),
+           :ok <- :inet.setopts(socket, active: :once) do
+        {:noreply, state}
+      else
+        _other -> {:noreply, close_socket(state, socket)}
+      end
+    end
+
+    def handle_info({:tcp_closed, socket}, state) do
+      {:noreply, close_socket(state, socket)}
+    end
+
+    def handle_info({:tcp_error, socket, _reason}, state) do
+      {:noreply, close_socket(state, socket)}
+    end
+
+    def handle_info({:gun_ws, conn, _stream, _frame}, state) do
+      {:noreply, close_connection(state, conn)}
+    end
+
+    def handle_info({:gun_response, conn, _stream, _fin, _status, _headers}, state) do
+      {:noreply, close_connection(state, conn)}
+    end
+
+    def handle_info({:gun_error, conn, _stream, _reason}, state) do
+      {:noreply, close_connection(state, conn)}
+    end
+
+    def handle_info({:gun_error, conn, _reason}, state) do
+      {:noreply, close_connection(state, conn)}
+    end
+
+    def handle_info({:gun_down, conn, _protocol, _reason, _streams}, state) do
+      {:noreply, close_connection(state, conn)}
+    end
+
+    def handle_info({:DOWN, _ref, :process, conn, _reason}, state) do
+      {:noreply, close_connection(state, conn)}
+    end
+
+    def handle_info({:connect_timeout, conn}, state) do
+      case Map.fetch(state.connections, conn) do
+        {:ok, %{phase: :ready}} -> {:noreply, state}
+        _other -> {:noreply, close_connection(state, conn)}
+      end
+    end
+
+    def handle_info({:EXIT, acceptor, _reason}, %{acceptor: acceptor} = state) do
+      {:stop, :acceptor_closed, state}
+    end
+
+    def handle_info(_message, state) do
       {:noreply, state}
     end
 
-    @impl true
-    def terminate(_reason, %{listener: listener}) do
-      if listener do
-        :gen_tcp.close(listener)
-      end
-
+    def terminate(_reason, state) do
+      :gen_tcp.close(state.listener)
+      Enum.each(Map.keys(state.connections), &close_connection(state, &1))
       :ok
     end
 
-    # Private functions
+    def format_status(status) do
+      # OTP 25+ uses this callback, including Elixir 1.15 applications.
+      Map.merge(status, %{state: :redacted, message: :redacted, reason: :redacted, log: []})
+    end
 
     defp accept_loop(server, listener) do
       case :gen_tcp.accept(listener) do
         {:ok, socket} ->
-          GenServer.cast(server, {:new_connection, socket})
-          accept_loop(server, listener)
-
-        {:error, :closed} ->
-          :ok
-
-        {:error, _reason} ->
-          accept_loop(server, listener)
-      end
-    end
-
-    defp handle_connection(local_socket, state) do
-      # Build WebSocket URL
-      ws_url = build_proxy_url(state)
-
-      # Connect via gun
-      {:ok, {scheme, host, port, path}} = parse_ws_url(ws_url)
-
-      opts = Sprites.Transport.gun_opts(Atom.to_string(scheme))
-
-      case :gun.open(host, port, opts) do
-        {:ok, conn} ->
-          case :gun.await_up(conn, 10_000) do
-            {:ok, _protocol} ->
-              headers = ClientSignals.auth_headers(state.client.token)
-
-              stream_ref = :gun.ws_upgrade(conn, path, headers, %{})
-
-              receive do
-                {:gun_upgrade, ^conn, ^stream_ref, ["websocket"], _headers} ->
-                  # Send init message
-                  init_msg =
-                    Jason.encode!(%{
-                      host: state.remote_host,
-                      port: state.remote_port
-                    })
-
-                  :gun.ws_send(conn, stream_ref, {:text, init_msg})
-
-                  # Wait for response
-                  receive do
-                    {:gun_ws, ^conn, ^stream_ref, {:text, response}} ->
-                      case Jason.decode(response) do
-                        {:ok, %{"status" => "connected"}} ->
-                          # Start bidirectional proxy
-                          proxy_loop(local_socket, conn, stream_ref)
-
-                        {:ok, %{"status" => status}} ->
-                          :gen_tcp.close(local_socket)
-                          :gun.close(conn)
-                          {:error, {:proxy_failed, status}}
-
-                        {:error, _} ->
-                          :gen_tcp.close(local_socket)
-                          :gun.close(conn)
-                          {:error, :invalid_response}
-                      end
-
-                    {:gun_ws, ^conn, ^stream_ref, {:close, _, _}} ->
-                      :gen_tcp.close(local_socket)
-                      :gun.close(conn)
-                      {:error, :connection_closed}
-                  after
-                    10_000 ->
-                      :gen_tcp.close(local_socket)
-                      :gun.close(conn)
-                      {:error, :timeout}
-                  end
-
-                {:gun_response, ^conn, ^stream_ref, :nofin, status, _headers} ->
-                  :gen_tcp.close(local_socket)
-                  :gun.close(conn)
-                  {:error, {:upgrade_failed, status}}
-
-                {:gun_error, ^conn, ^stream_ref, reason} ->
-                  :gen_tcp.close(local_socket)
-                  :gun.close(conn)
-                  {:error, reason}
-              after
-                10_000 ->
-                  :gen_tcp.close(local_socket)
-                  :gun.close(conn)
-                  {:error, :upgrade_timeout}
-              end
-
-            {:error, reason} ->
-              :gen_tcp.close(local_socket)
-              :gun.close(conn)
-              {:error, reason}
+          case :gen_tcp.controlling_process(socket, server) do
+            :ok -> GenServer.cast(server, {:new_connection, socket})
+            {:error, _reason} -> :gen_tcp.close(socket)
           end
 
-        {:error, reason} ->
-          :gen_tcp.close(local_socket)
-          {:error, reason}
-      end
-    end
+          accept_loop(server, listener)
 
-    defp proxy_loop(local_socket, ws_conn, stream_ref) do
-      # Set local socket to active mode
-      :inet.setopts(local_socket, [{:active, true}])
-
-      do_proxy_loop(local_socket, ws_conn, stream_ref)
-    end
-
-    defp do_proxy_loop(local_socket, ws_conn, stream_ref) do
-      receive do
-        # Data from local socket -> send to WebSocket
-        {:tcp, ^local_socket, data} ->
-          :gun.ws_send(ws_conn, stream_ref, {:binary, data})
-          do_proxy_loop(local_socket, ws_conn, stream_ref)
-
-        # Local socket closed
-        {:tcp_closed, ^local_socket} ->
-          :gun.close(ws_conn)
-          :ok
-
-        {:tcp_error, ^local_socket, _reason} ->
-          :gun.close(ws_conn)
-          :ok
-
-        # Data from WebSocket -> send to local socket
-        {:gun_ws, ^ws_conn, ^stream_ref, {:binary, data}} ->
-          :gen_tcp.send(local_socket, data)
-          do_proxy_loop(local_socket, ws_conn, stream_ref)
-
-        # WebSocket closed
-        {:gun_ws, ^ws_conn, ^stream_ref, {:close, _, _}} ->
-          :gen_tcp.close(local_socket)
-          :gun.close(ws_conn)
-          :ok
-
-        {:gun_down, ^ws_conn, _, _, _} ->
-          :gen_tcp.close(local_socket)
-          :ok
-
-        {:gun_error, ^ws_conn, _, _reason} ->
-          :gen_tcp.close(local_socket)
-          :gun.close(ws_conn)
+        {:error, _reason} ->
           :ok
       end
     end
 
-    defp build_proxy_url(state) do
-      base_url =
-        state.client.base_url
-        |> String.replace(~r/^http/, "ws")
+    defp open_connection(state) do
+      uri = URI.parse(state.client.base_url)
 
-      "#{base_url}/v1/sprites/#{URI.encode(state.sprite_name)}/proxy"
+      scheme =
+        if uri.scheme == "https" do
+          "wss"
+        else
+          "ws"
+        end
+
+      opts = Sprites.Transport.gun_opts(scheme) |> Map.put(:retry, 0)
+      :gun.open(String.to_charlist(uri.host), uri.port, opts)
+    rescue
+      _error -> {:error, :connection_failed}
+    catch
+      :exit, _reason -> {:error, :connection_failed}
     end
 
-    defp parse_ws_url(url) do
-      uri = URI.parse(url)
+    defp send_frame(conn, stream, data) do
+      :gun.ws_send(conn, stream, {:binary, data})
+      # Wait until Gun handles the send before accepting another TCP message.
+      :gun.info(conn)
+      :ok
+    catch
+      :exit, _reason -> {:error, :connection_closed}
+    end
 
-      scheme = if uri.scheme == "wss", do: :wss, else: :ws
-      host = String.to_charlist(uri.host)
-      port = uri.port || if(scheme == :wss, do: 443, else: 80)
-      path = String.to_charlist(uri.path || "/")
+    defp put_connection(state, conn, connection) do
+      %{state | connections: Map.put(state.connections, conn, connection)}
+    end
 
-      {:ok, {scheme, host, port, path}}
+    defp close_socket(state, socket) do
+      case Map.fetch(state.sockets, socket) do
+        {:ok, conn} -> close_connection(state, conn)
+        :error -> state
+      end
+    end
+
+    defp close_connection(state, conn) do
+      case Map.pop(state.connections, conn) do
+        {nil, _connections} ->
+          state
+
+        {connection, connections} ->
+          if connection.timer do
+            Process.cancel_timer(connection.timer)
+          end
+
+          Process.demonitor(connection.monitor, [:flush])
+          :gen_tcp.close(connection.socket)
+          :gun.close(conn)
+
+          %{
+            state
+            | connections: connections,
+              sockets: Map.delete(state.sockets, connection.socket)
+          }
+      end
     end
   end
 
