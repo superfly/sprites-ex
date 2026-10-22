@@ -16,6 +16,10 @@ defmodule Sprites.Command do
 
     * **Direct mode** (default) — opens a new WebSocket per command to `/exec`
     * **Control mode** — multiplexes over a persistent WebSocket to `/control`
+
+  Both modes accept the same exec options (see `Sprites.spawn/4`), including
+  `:max_run_after_disconnect`, a duration string such as `"10s"` that limits how
+  long the command keeps running after the client disconnects.
   """
 
   use GenServer
@@ -36,9 +40,16 @@ defmodule Sprites.Command do
 
   @doc """
   Starts a command asynchronously.
+
+  Raises `ArgumentError` if `:max_run_after_disconnect` is not a duration string.
   """
   @spec start(Sprite.t(), String.t(), [String.t()], keyword()) :: {:ok, t()} | {:error, term()}
   def start(sprite, command, args, opts \\ []) do
+    # Validate up front so bad options raise in the caller instead of crashing
+    # the command process (which in control mode would leak a checked-out
+    # connection).
+    _ = Sprite.max_run_after_disconnect(opts)
+
     owner = Keyword.get(opts, :owner, self())
     tty_mode = Keyword.get(opts, :tty, false)
 
@@ -184,38 +195,47 @@ defmodule Sprites.Command do
   end
 
   defp build_control_args(command, args, opts, stdin) do
-    control_args = %{"cmd" => [command | args]}
+    %{"cmd" => [command | args]}
+    |> put_control_dir(opts)
+    |> put_control_env(opts)
+    |> put_control_tty(opts)
+    |> put_control_max_run_after_disconnect(opts)
+    |> Map.put("stdin", if(stdin, do: "true", else: "false"))
+  end
 
-    control_args =
-      case Keyword.get(opts, :dir) do
-        nil -> control_args
-        dir -> Map.put(control_args, "dir", dir)
-      end
+  defp put_control_dir(control_args, opts) do
+    case Keyword.get(opts, :dir) do
+      nil -> control_args
+      dir -> Map.put(control_args, "dir", dir)
+    end
+  end
 
-    control_args =
-      case Keyword.get(opts, :env, []) do
-        [] ->
-          control_args
+  defp put_control_env(control_args, opts) do
+    case Keyword.get(opts, :env, []) do
+      [] -> control_args
+      env_list -> Map.put(control_args, "env", Enum.map(env_list, fn {k, v} -> "#{k}=#{v}" end))
+    end
+  end
 
-        env_list ->
-          env_strs = Enum.map(env_list, fn {k, v} -> "#{k}=#{v}" end)
-          Map.put(control_args, "env", env_strs)
-      end
+  defp put_control_tty(control_args, opts) do
+    if Keyword.get(opts, :tty, false) do
+      rows = Keyword.get(opts, :tty_rows, 24)
+      cols = Keyword.get(opts, :tty_cols, 80)
 
-    control_args =
-      if Keyword.get(opts, :tty, false) do
-        rows = Keyword.get(opts, :tty_rows, 24)
-        cols = Keyword.get(opts, :tty_cols, 80)
+      control_args
+      |> Map.put("tty", "true")
+      |> Map.put("rows", to_string(rows))
+      |> Map.put("cols", to_string(cols))
+    else
+      control_args
+    end
+  end
 
-        control_args
-        |> Map.put("tty", "true")
-        |> Map.put("rows", to_string(rows))
-        |> Map.put("cols", to_string(cols))
-      else
-        control_args
-      end
-
-    Map.put(control_args, "stdin", if(stdin, do: "true", else: "false"))
+  defp put_control_max_run_after_disconnect(control_args, opts) do
+    case Sprite.max_run_after_disconnect(opts) do
+      nil -> control_args
+      duration -> Map.put(control_args, "max_run_after_disconnect", duration)
+    end
   end
 
   defp do_direct_init(sprite, command, args, opts, token, state) do

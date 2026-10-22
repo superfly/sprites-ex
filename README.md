@@ -104,6 +104,17 @@ Sprites.close_stdin(command)
 Sprites.resize(command, 40, 120)
 ```
 
+#### Running after disconnect
+
+Commands keep running on the sprite after the client disconnects. Pass
+`max_run_after_disconnect` (a duration string such as `"10s"` or `"5m"`) to
+`Sprites.spawn/4` or `Sprites.cmd/4` to stop the command that long after the
+connection drops:
+
+```elixir
+{:ok, command} = Sprites.spawn(sprite, "bash", [], tty: true, max_run_after_disconnect: "10s")
+```
+
 #### Provider session identity
 
 Asynchronous callers can opt into `session_info: true` to receive

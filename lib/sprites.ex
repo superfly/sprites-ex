@@ -113,6 +113,10 @@ defmodule Sprites do
     * `:tty` - Allocate a TTY (default: false)
     * `:tty_rows` - TTY rows (default: 24)
     * `:tty_cols` - TTY columns (default: 80)
+    * `:max_run_after_disconnect` - How long the command may keep running
+      after the client disconnects, as a duration string such as `"10s"` or
+      `"5m"`. When omitted, the command keeps running after disconnect with
+      no time limit. Ignored when attaching to an existing session.
 
   ## Examples
 
@@ -143,6 +147,10 @@ defmodule Sprites do
     * `:tty` - Allocate a TTY (default: false)
     * `:tty_rows` - TTY rows (default: 24)
     * `:tty_cols` - TTY columns (default: 80)
+    * `:max_run_after_disconnect` - How long the command may keep running
+      after the client disconnects, as a duration string such as `"10s"` or
+      `"5m"`. When omitted, the command keeps running after disconnect with
+      no time limit. Ignored when attaching to an existing session.
     * `:session_info` - Report provider session identity to the owner as
       `{:session_info, %{ref: ref}, session_id}` (default: false). The ID is a
       string. Missing metadata yields no identity; it is never inferred from
@@ -152,6 +160,9 @@ defmodule Sprites do
   ## Examples
 
       {:ok, cmd} = Sprites.spawn(sprite, "bash", ["-i"], tty: true)
+
+      # Stop the command 10s after the client disconnects
+      {:ok, cmd} = Sprites.spawn(sprite, "bash", [], tty: true, max_run_after_disconnect: "10s")
 
       receive do
         {:stdout, ^cmd, data} -> IO.write(data)

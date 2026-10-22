@@ -90,9 +90,32 @@ defmodule Sprites.Sprite do
     client.token
   end
 
+  @doc """
+  Returns the validated `:max_run_after_disconnect` option, or `nil` when unset.
+
+  The value must be a duration string such as `"10s"` or `"5m"`; anything else
+  raises `ArgumentError`. Shared by direct (`/exec`) and control-mode exec.
+  """
+  @spec max_run_after_disconnect(keyword()) :: String.t() | nil
+  def max_run_after_disconnect(opts) do
+    case Keyword.get(opts, :max_run_after_disconnect) do
+      nil ->
+        nil
+
+      duration when is_binary(duration) ->
+        duration
+
+      other ->
+        raise ArgumentError,
+              "expected :max_run_after_disconnect to be a duration string such as \"10s\", " <>
+                "got: #{inspect(other)}"
+    end
+  end
+
   defp build_query_params(command, args, opts) do
     # When attaching to an existing session (`:session_id` set), the server
-    # ignores cmd/path/env/dir/detachable — they belong to the original spawn.
+    # ignores cmd/path/env/dir/detachable/max_run_after_disconnect — they
+    # belong to the original spawn.
     # Only stdin/tty are meaningful for the attach side.
     case Keyword.get(opts, :session_id) do
       nil ->
@@ -102,6 +125,7 @@ defmodule Sprites.Sprite do
         |> add_env_params(opts)
         |> add_tty_params(opts)
         |> add_detachable_param(opts)
+        |> add_max_run_after_disconnect_param(opts)
 
       _session_id ->
         []
@@ -144,6 +168,13 @@ defmodule Sprites.Sprite do
       [{"detachable", "true"} | params]
     else
       params
+    end
+  end
+
+  defp add_max_run_after_disconnect_param(params, opts) do
+    case max_run_after_disconnect(opts) do
+      nil -> params
+      duration -> [{"max_run_after_disconnect", duration} | params]
     end
   end
 end
