@@ -34,6 +34,7 @@ defmodule Sprites.MixProject do
       {:cowlib, "~> 2.19.0"},
       {:jason, "~> 1.4"},
       {:client_signals, "~> 0.4.4"},
+      {:plug, "~> 1.0", only: :test},
       {:ex_doc, "~> 0.31", only: :dev, runtime: false}
     ]
   end

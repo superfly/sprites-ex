@@ -136,7 +136,7 @@ defmodule Sprites.Policy do
     body = to_map(policy)
 
     case Req.post(client.req, url: "/v1/sprites/#{URI.encode(name)}/policy/network", json: body) do
-      {:ok, %{status: 204}} ->
+      {:ok, %{status: status}} when status in 200..299 ->
         :ok
 
       {:ok, %{status: 400, body: body}} ->
