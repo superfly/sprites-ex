@@ -90,9 +90,45 @@ defmodule Sprites.Sprite do
     client.token
   end
 
+  # Go `time.ParseDuration` syntax, which is what the server parses: one or
+  # more decimal numbers each with a unit (e.g. "10s", "1h30m", "1.5s"), or a
+  # bare "0". Negative durations are rejected.
+  @duration_regex ~r/^(?:0|(?:(?:\d+\.?\d*|\.\d+)(?:ns|us|µs|μs|ms|s|m|h))+)$/u
+
+  @doc """
+  Returns the validated `:max_run_after_disconnect` option, or `nil` when unset.
+
+  The value must be a duration string in Go `time.ParseDuration` syntax, such
+  as `"10s"`, `"5m"`, `"1h30m"` or `"0"`. Anything else raises `ArgumentError`:
+  the server ignores unparseable values, which would silently disable the
+  timeout. Shared by direct (`/exec`) and control-mode exec.
+  """
+  @spec max_run_after_disconnect(keyword()) :: String.t() | nil
+  def max_run_after_disconnect(opts) do
+    case Keyword.get(opts, :max_run_after_disconnect) do
+      nil ->
+        nil
+
+      duration when is_binary(duration) ->
+        if Regex.match?(@duration_regex, duration) do
+          duration
+        else
+          raise ArgumentError,
+                "expected :max_run_after_disconnect to be a duration string such as " <>
+                  "\"10s\", \"5m\" or \"1h30m\", got: #{inspect(duration)}"
+        end
+
+      other ->
+        raise ArgumentError,
+              "expected :max_run_after_disconnect to be a duration string such as \"10s\", " <>
+                "got: #{inspect(other)}"
+    end
+  end
+
   defp build_query_params(command, args, opts) do
     # When attaching to an existing session (`:session_id` set), the server
-    # ignores cmd/path/env/dir/detachable — they belong to the original spawn.
+    # ignores cmd/path/env/dir/detachable/max_run_after_disconnect — they
+    # belong to the original spawn.
     # Only stdin/tty are meaningful for the attach side.
     case Keyword.get(opts, :session_id) do
       nil ->
@@ -102,6 +138,7 @@ defmodule Sprites.Sprite do
         |> add_env_params(opts)
         |> add_tty_params(opts)
         |> add_detachable_param(opts)
+        |> add_max_run_after_disconnect_param(opts)
 
       _session_id ->
         []
@@ -144,6 +181,13 @@ defmodule Sprites.Sprite do
       [{"detachable", "true"} | params]
     else
       params
+    end
+  end
+
+  defp add_max_run_after_disconnect_param(params, opts) do
+    case max_run_after_disconnect(opts) do
+      nil -> params
+      duration -> [{"max_run_after_disconnect", duration} | params]
     end
   end
 end
