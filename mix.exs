@@ -33,7 +33,7 @@ defmodule Sprites.MixProject do
       # Cowlib 2.20 requires OTP 27; keep compatibility with Elixir 1.15 / OTP 26.
       {:cowlib, "~> 2.19.0"},
       {:jason, "~> 1.4"},
-      {:client_signals, "~> 0.4.4"},
+      {:client_signals, "~> 0.5.0"},
       {:plug, "~> 1.0", only: :test},
       {:ex_doc, "~> 0.31", only: :dev, runtime: false}
     ]
