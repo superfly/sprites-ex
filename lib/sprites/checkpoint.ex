@@ -217,10 +217,15 @@ defmodule Sprites.Checkpoint do
 
     http_method = method
 
+    # Redirects are not followed: :httpc replays the original headers against
+    # the new location, so an https -> http hop would resend the bearer token
+    # in cleartext and would not reuse the TLS options selected here.
+    base_options = [timeout: :infinity, autoredirect: false]
+
     http_options =
       case URI.parse(url).scheme do
-        "https" -> [timeout: :infinity, ssl: Sprites.Transport.tls_opts()]
-        _ -> [timeout: :infinity]
+        "https" -> base_options ++ [ssl: Sprites.Transport.tls_opts()]
+        _ -> base_options
       end
 
     case :httpc.request(http_method, request, http_options, [

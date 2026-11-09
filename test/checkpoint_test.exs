@@ -55,6 +55,52 @@ defmodule Sprites.CheckpointTest do
       assert {"authorization", "Bearer test-token"} in headers
     end
 
+    @tag :tmp_dir
+    test "#{operation} does not follow an HTTPS-to-HTTP redirect", %{root: root} do
+      {:ok, target} =
+        :gen_tcp.listen(0, [:binary, active: false, ip: {127, 0, 0, 1}])
+
+      on_exit(fn -> :gen_tcp.close(target) end)
+      {:ok, {_, target_port}} = :inet.sockname(target)
+
+      server =
+        tls_server(root, ~c"localhost", fn transport, socket ->
+          serve_redirect(transport, socket, "http://127.0.0.1:#{target_port}/leak")
+        end)
+
+      target_task =
+        Task.async(fn ->
+          case :gen_tcp.accept(target, 1_000) do
+            {:ok, socket} ->
+              # Respond if a regression follows the redirect, so the client
+              # finishes and the assertions fail instead of hanging.
+              :gen_tcp.send(socket, "HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n")
+              :gen_tcp.close(socket)
+              :contacted
+
+            {:error, reason} ->
+              {:error, reason}
+          end
+        end)
+
+      client = Client.new("must-not-be-replayed", base_url: server.url)
+
+      {result, expected_path} =
+        case unquote(operation) do
+          :create ->
+            {Checkpoint.create_by_name(client, "sprite"), "/v1/sprites/sprite/checkpoint"}
+
+          :restore ->
+            {Checkpoint.restore_by_name(client, "sprite", "checkpoint"),
+             "/v1/sprites/sprite/checkpoints/checkpoint/restore"}
+        end
+
+      assert {:error, {:api_error, 302, _}} = result
+      assert {:request, ^expected_path, headers} = Task.await(server.task)
+      assert {"authorization", "Bearer must-not-be-replayed"} in headers
+      assert {:error, :timeout} = Task.await(target_task)
+    end
+
     for failure <- [:untrusted, :wrong_hostname] do
       @tag :tmp_dir
       @tag capture_log: true
@@ -110,7 +156,53 @@ defmodule Sprites.CheckpointTest do
     assert {:request, "/v1/sprites/sprite/checkpoint", _} = Task.await(server)
   end
 
-  defp tls_server(root, hostname) do
+  @tag :tmp_dir
+  test "checkpoint requests do not follow a redirect that would replay the token" do
+    {:ok, target} =
+      :gen_tcp.listen(0, [:binary, active: false, packet: :http_bin, ip: {127, 0, 0, 1}])
+
+    on_exit(fn -> :gen_tcp.close(target) end)
+    {:ok, {_, target_port}} = :inet.sockname(target)
+    target_task = Task.async(fn -> :gen_tcp.accept(target, 1_000) end)
+
+    {:ok, listener} =
+      :gen_tcp.listen(0, [:binary, active: false, packet: :http_bin, ip: {127, 0, 0, 1}])
+
+    on_exit(fn -> :gen_tcp.close(listener) end)
+    {:ok, {_, port}} = :inet.sockname(listener)
+
+    server =
+      Task.async(fn ->
+        {:ok, socket} = :gen_tcp.accept(listener, 5_000)
+        serve_redirect(:gen_tcp, socket, "http://127.0.0.1:#{target_port}/leak")
+      end)
+
+    client = Client.new("must-not-be-replayed", base_url: "http://127.0.0.1:#{port}")
+
+    assert {:error, {:api_error, 302, _}} = Checkpoint.create_by_name(client, "sprite")
+    assert {:request, "/v1/sprites/sprite/checkpoint", headers} = Task.await(server)
+    assert {"authorization", "Bearer must-not-be-replayed"} in headers
+
+    # The redirect target is never contacted, so the bearer token is not
+    # replayed to it over cleartext.
+    assert {:error, :timeout} = Task.await(target_task)
+  end
+
+  defp serve_redirect(transport, socket, location) do
+    {:ok, {:http_request, :POST, {:abs_path, path}, _version}} = transport.recv(socket, 0, 5_000)
+    headers = read_headers(transport, socket, [])
+
+    :ok =
+      transport.send(
+        socket,
+        "HTTP/1.1 302 Found\r\nLocation: #{location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+      )
+
+    transport.close(socket)
+    {:request, path, headers}
+  end
+
+  defp tls_server(root, hostname, handler \\ &serve_request/2) do
     config =
       :public_key.pkix_test_data(%{
         root: root,
@@ -135,7 +227,7 @@ defmodule Sprites.CheckpointTest do
         {:ok, socket} = :ssl.transport_accept(listener, 5_000)
 
         case :ssl.handshake(socket, 5_000) do
-          {:ok, socket} -> serve_request(:ssl, socket)
+          {:ok, socket} -> handler.(:ssl, socket)
           {:error, reason} -> {:handshake_error, reason}
         end
       end)
