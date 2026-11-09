@@ -578,7 +578,7 @@ defmodule Sprites.Filesystem do
   # ============================================================================
 
   defp sprite_path(%__MODULE__{sprite: %Sprite{name: name}}, endpoint) do
-    "/v1/sprites/#{URI.encode(name)}#{endpoint}"
+    "/v1/sprites/#{Sprites.Path.encode_segment(name)}#{endpoint}"
   end
 
   defp build_url(fs, endpoint, params) do

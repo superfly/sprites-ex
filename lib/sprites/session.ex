@@ -92,7 +92,7 @@ defmodule Sprites.Session do
   """
   @spec list_by_name(Client.t(), String.t()) :: {:ok, [t()]} | {:error, term()}
   def list_by_name(%Client{} = client, name) when is_binary(name) do
-    case Req.get(client.req, url: "/v1/sprites/#{URI.encode(name)}/exec") do
+    case Req.get(client.req, url: "/v1/sprites/#{Sprites.Path.encode_segment(name)}/exec") do
       {:ok, %{status: status, body: body}} when status in 200..299 ->
         sessions =
           (Map.get(body, "sessions") || [])

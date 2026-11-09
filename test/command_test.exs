@@ -1,7 +1,94 @@
 defmodule Sprites.CommandTest do
   use ExUnit.Case, async: true
 
-  alias Sprites.{Command, Protocol}
+  alias Sprites.{Command, ControlConn, Protocol, Sprite}
+
+  for mode <- [:direct, :tty, :control, :op_complete],
+      code <- [nil, false, true, "0", %{}, [], -1, 256, 1.0, 999_999_999_999] do
+    test "#{mode} rejects invalid exit code #{inspect(code)}" do
+      mode = unquote(mode)
+      code = unquote(Macro.escape(code))
+
+      state =
+        command_state(%{
+          tty_mode: unquote(mode == :tty),
+          using_control: unquote(mode in [:control, :op_complete]),
+          control_conn: if(unquote(mode in [:control, :op_complete]), do: self())
+        })
+
+      ref = state.ref
+
+      assert {:stop, :normal, %{exit_code: nil, terminal_error: :invalid_exit_code} = stopped} =
+               Command.handle_info(exit_frame(mode, code), state)
+
+      assert_receive {:error, %{ref: ^ref}, :invalid_exit_code}
+      refute_received {:exit, _, _}
+
+      if state.using_control do
+        assert stopped.control_conn == nil
+        assert_receive {:"$gen_cast", :close}
+      end
+    end
+  end
+
+  for mode <- [:direct, :tty, :control, :op_complete], code <- [0, 255] do
+    test "#{mode} accepts exit code boundary #{code}" do
+      mode = unquote(mode)
+      code = unquote(code)
+
+      state =
+        command_state(%{
+          tty_mode: unquote(mode == :tty),
+          using_control: unquote(mode in [:control, :op_complete]),
+          sprite: Sprite.new(Sprites.new("test-token"), "exit-test")
+        })
+
+      ref = state.ref
+      result = Command.handle_info(exit_frame(mode, code), state)
+      assert elem(result, tuple_size(result) - 1).exit_code == code
+      assert_receive {:exit, %{ref: ^ref}, ^code}
+      refute_received {:error, _, _}
+    end
+  end
+
+  for closing <- [:close, :down] do
+    test "an invalid exit drained during #{closing} reports one error and no success" do
+      state = command_state()
+      ref = state.ref
+      send(self(), exit_frame(:direct, "0"))
+
+      frame =
+        if unquote(closing) == :close,
+          do: {:gun_ws, nil, make_ref(), {:close, 1000, ""}},
+          else: {:gun_down, nil, :http, :closed, []}
+
+      assert {:stop, :normal, %{exit_code: nil}} = Command.handle_info(frame, state)
+
+      assert_receive {:error, %{ref: ^ref}, :invalid_exit_code}
+      refute_received {:error, _, _}
+      refute_received {:exit, _, _}
+    end
+  end
+
+  defp exit_frame(:op_complete, code) do
+    # Exercise the actual control JSON decoder before the command boundary.
+    payload = "control:" <> Jason.encode!(%{type: "op.complete", args: %{exitCode: code}})
+    state = %{conn: nil, owner: self(), op_active: true}
+
+    assert {:noreply, %{op_active: false}} =
+             ControlConn.handle_info({:gun_ws, nil, make_ref(), {:text, payload}}, state)
+
+    assert_receive {:control_op_complete, ^code} = message
+    message
+  end
+
+  defp exit_frame(mode, code) do
+    json = Jason.encode!(%{type: "exit", exit_code: code})
+
+    if mode == :control,
+      do: {:control_data, :text, json},
+      else: {:gun_ws, nil, make_ref(), {:text, json}}
+  end
 
   test "handles the exit_code field in control text exit frames" do
     state = command_state(%{using_control: true})

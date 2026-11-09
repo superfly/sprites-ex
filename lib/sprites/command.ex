@@ -304,6 +304,11 @@ defmodule Sprites.Command do
     handle_text_frame(text, state)
   end
 
+  def handle_info({:control_op_complete, code}, %{using_control: true} = state)
+      when not (is_integer(code) and code in 0..255) do
+    protocol_error(state, :invalid_exit_code)
+  end
+
   def handle_info(
         {:control_op_complete, exit_code},
         %{using_control: true, owner: owner, ref: ref, sprite: sprite, control_conn: conn_pid} =
@@ -514,6 +519,10 @@ defmodule Sprites.Command do
         send(owner, {:port, %{ref: ref}, port})
         {:noreply, state}
 
+      {:ok, %{"type" => "exit", "exit_code" => code}}
+      when not (is_integer(code) and code in 0..255) ->
+        protocol_error(state, :invalid_exit_code)
+
       {:ok, %{"type" => "exit"} = message} ->
         code = Map.get(message, "exit_code", 0)
 
@@ -550,10 +559,10 @@ defmodule Sprites.Command do
         {:noreply, state}
 
       {{:ok, _other}, _original} ->
-        session_info_error(state, :conflicting_session_info)
+        protocol_error(state, :conflicting_session_info)
 
       {:error, _} ->
-        session_info_error(state, :invalid_session_info)
+        protocol_error(state, :invalid_session_info)
     end
   end
 
@@ -568,7 +577,7 @@ defmodule Sprites.Command do
 
   defp normalize_session_id(_), do: :error
 
-  defp session_info_error(state, reason) do
+  defp protocol_error(state, reason) do
     send(state.owner, {:error, %{ref: state.ref}, reason})
 
     # An active control operation must not be returned to the reusable pool.

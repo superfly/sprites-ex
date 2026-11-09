@@ -98,7 +98,9 @@ defmodule Sprites.Policy do
   """
   @spec get_by_name(Client.t(), String.t()) :: {:ok, t()} | {:error, term()}
   def get_by_name(%Client{} = client, name) when is_binary(name) do
-    case Req.get(client.req, url: "/v1/sprites/#{URI.encode(name)}/policy/network") do
+    case Req.get(client.req,
+           url: "/v1/sprites/#{Sprites.Path.encode_segment(name)}/policy/network"
+         ) do
       {:ok, %{status: status, body: body}} when status in 200..299 ->
         {:ok, from_map(body)}
 
@@ -135,7 +137,10 @@ defmodule Sprites.Policy do
   def update_by_name(%Client{} = client, name, %__MODULE__{} = policy) when is_binary(name) do
     body = to_map(policy)
 
-    case Req.post(client.req, url: "/v1/sprites/#{URI.encode(name)}/policy/network", json: body) do
+    case Req.post(client.req,
+           url: "/v1/sprites/#{Sprites.Path.encode_segment(name)}/policy/network",
+           json: body
+         ) do
       {:ok, %{status: status}} when status in 200..299 ->
         :ok
 
