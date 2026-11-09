@@ -276,7 +276,7 @@ defmodule Sprites.Proxy do
         state.client.base_url
         |> String.replace(~r/^http/, "ws")
 
-      "#{base_url}/v1/sprites/#{URI.encode(state.sprite_name)}/proxy"
+      "#{base_url}/v1/sprites/#{Sprites.Path.encode_segment(state.sprite_name)}/proxy"
     end
 
     defp parse_ws_url(url) do

@@ -80,7 +80,10 @@ defmodule Sprites.Checkpoint do
         filter -> [history: filter]
       end
 
-    case Req.get(client.req, url: "/v1/sprites/#{URI.encode(name)}/checkpoints", params: params) do
+    case Req.get(client.req,
+           url: "/v1/sprites/#{Sprites.Path.encode_segment(name)}/checkpoints",
+           params: params
+         ) do
       {:ok, %{status: status, body: body}} when status in 200..299 and is_list(body) ->
         {:ok, Enum.map(body, &from_map/1)}
 
@@ -113,7 +116,8 @@ defmodule Sprites.Checkpoint do
   """
   @spec get_by_name(Client.t(), String.t(), String.t()) :: {:ok, t()} | {:error, term()}
   def get_by_name(%Client{} = client, name, checkpoint_id) when is_binary(name) do
-    url = "/v1/sprites/#{URI.encode(name)}/checkpoints/#{URI.encode(checkpoint_id)}"
+    url =
+      "/v1/sprites/#{Sprites.Path.encode_segment(name)}/checkpoints/#{Sprites.Path.encode_segment(checkpoint_id)}"
 
     case Req.get(client.req, url: url) do
       {:ok, %{status: status, body: body}} when status in 200..299 ->
@@ -152,7 +156,7 @@ defmodule Sprites.Checkpoint do
   @spec create_by_name(Client.t(), String.t(), keyword()) ::
           {:ok, Enumerable.t()} | {:error, term()}
   def create_by_name(%Client{} = client, name, opts \\ []) when is_binary(name) do
-    url = "#{client.base_url}/v1/sprites/#{URI.encode(name)}/checkpoint"
+    url = "#{client.base_url}/v1/sprites/#{Sprites.Path.encode_segment(name)}/checkpoint"
     comment = Keyword.get(opts, :comment, "")
 
     body = if comment != "", do: Jason.encode!(%{comment: comment}), else: "{}"
@@ -184,7 +188,7 @@ defmodule Sprites.Checkpoint do
           {:ok, Enumerable.t()} | {:error, term()}
   def restore_by_name(%Client{} = client, name, checkpoint_id) when is_binary(name) do
     url =
-      "#{client.base_url}/v1/sprites/#{URI.encode(name)}/checkpoints/#{URI.encode(checkpoint_id)}/restore"
+      "#{client.base_url}/v1/sprites/#{Sprites.Path.encode_segment(name)}/checkpoints/#{Sprites.Path.encode_segment(checkpoint_id)}/restore"
 
     headers = ClientSignals.auth_headers(client.token)
 
@@ -213,7 +217,18 @@ defmodule Sprites.Checkpoint do
 
     http_method = method
 
-    case :httpc.request(http_method, request, [{:timeout, :infinity}], [
+    # Redirects are not followed: :httpc replays the original headers against
+    # the new location, so an https -> http hop would resend the bearer token
+    # in cleartext and would not reuse the TLS options selected here.
+    base_options = [timeout: :infinity, autoredirect: false]
+
+    http_options =
+      case URI.parse(url).scheme do
+        "https" -> base_options ++ [ssl: Sprites.Transport.tls_opts()]
+        _ -> base_options
+      end
+
+    case :httpc.request(http_method, request, http_options, [
            {:body_format, :binary},
            {:sync, true}
          ]) do

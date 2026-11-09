@@ -79,7 +79,7 @@ defmodule Sprites.Client do
   """
   @spec delete_sprite(t(), String.t()) :: :ok | {:error, term()}
   def delete_sprite(client, name) do
-    case Req.delete(client.req, url: "/v1/sprites/#{URI.encode(name)}") do
+    case Req.delete(client.req, url: "/v1/sprites/#{Sprites.Path.encode_segment(name)}") do
       {:ok, %{status: status}} when status in 200..299 ->
         :ok
 
@@ -127,7 +127,7 @@ defmodule Sprites.Client do
   """
   @spec get_sprite(t(), String.t()) :: {:ok, map()} | {:error, term()}
   def get_sprite(client, name) do
-    case Req.get(client.req, url: "/v1/sprites/#{URI.encode(name)}") do
+    case Req.get(client.req, url: "/v1/sprites/#{Sprites.Path.encode_segment(name)}") do
       {:ok, %{status: status, body: body}} when status in 200..299 ->
         {:ok, body}
 
@@ -147,7 +147,7 @@ defmodule Sprites.Client do
   """
   @spec upgrade_sprite(t(), String.t()) :: :ok | {:error, term()}
   def upgrade_sprite(client, name) do
-    case Req.post(client.req, url: "/v1/sprites/#{URI.encode(name)}/upgrade") do
+    case Req.post(client.req, url: "/v1/sprites/#{Sprites.Path.encode_segment(name)}/upgrade") do
       {:ok, %{status: status}} when status in 200..299 ->
         :ok
 
@@ -170,7 +170,7 @@ defmodule Sprites.Client do
   def update_url_settings(client, name, settings) do
     body = %{url_settings: settings}
 
-    case Req.put(client.req, url: "/v1/sprites/#{URI.encode(name)}", json: body) do
+    case Req.put(client.req, url: "/v1/sprites/#{Sprites.Path.encode_segment(name)}", json: body) do
       {:ok, %{status: status}} when status in 200..299 ->
         :ok
 

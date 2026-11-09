@@ -53,8 +53,11 @@ defmodule Sprites.Sprite do
 
     path =
       case Keyword.get(opts, :session_id) do
-        nil -> "/v1/sprites/#{URI.encode(name)}/exec"
-        sid -> "/v1/sprites/#{URI.encode(name)}/exec/#{URI.encode(sid)}"
+        nil ->
+          "/v1/sprites/#{Sprites.Path.encode_segment(name)}/exec"
+
+        sid ->
+          "/v1/sprites/#{Sprites.Path.encode_segment(name)}/exec/#{Sprites.Path.encode_segment(sid)}"
       end
 
     query_params = build_query_params(command, args, opts)
@@ -71,7 +74,7 @@ defmodule Sprites.Sprite do
       client.base_url
       |> String.replace(~r/^http/, "ws")
 
-    "#{base}/v1/sprites/#{URI.encode(name)}/control"
+    "#{base}/v1/sprites/#{Sprites.Path.encode_segment(name)}/control"
   end
 
   @doc """
