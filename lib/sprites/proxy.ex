@@ -5,7 +5,7 @@ defmodule Sprites.Proxy do
   Allows forwarding local ports to remote ports on the sprite.
   """
 
-  alias Sprites.{Client, ClientSignals, Sprite}
+  alias Sprites.{Client, ClientSignals, Sprite, WebSocket}
 
   defmodule PortMapping do
     @moduledoc """
@@ -90,8 +90,7 @@ defmodule Sprites.Proxy do
             sprite_name: sprite_name
           }
 
-          # Start acceptor process
-          spawn_link(fn -> accept_loop(self(), listener) end)
+          spawn_link(fn -> accept_loop(listener, state) end)
 
           {:ok, state}
 
@@ -109,13 +108,6 @@ defmodule Sprites.Proxy do
     end
 
     @impl true
-    def handle_cast({:new_connection, socket}, state) do
-      # Handle new connection in a separate process
-      spawn(fn -> handle_connection(socket, state) end)
-      {:noreply, state}
-    end
-
-    @impl true
     def terminate(_reason, %{listener: listener}) do
       if listener do
         :gen_tcp.close(listener)
@@ -126,99 +118,49 @@ defmodule Sprites.Proxy do
 
     # Private functions
 
-    defp accept_loop(server, listener) do
+    defp accept_loop(listener, state) do
       case :gen_tcp.accept(listener) do
         {:ok, socket} ->
-          GenServer.cast(server, {:new_connection, socket})
-          accept_loop(server, listener)
+          pid =
+            spawn(fn ->
+              receive do
+                {:socket, ^socket} -> handle_connection(socket, state)
+              end
+            end)
+
+          case :gen_tcp.controlling_process(socket, pid) do
+            :ok ->
+              send(pid, {:socket, socket})
+
+            {:error, _} ->
+              Process.exit(pid, :kill)
+              :gen_tcp.close(socket)
+          end
+
+          accept_loop(listener, state)
 
         {:error, :closed} ->
           :ok
 
         {:error, _reason} ->
-          accept_loop(server, listener)
+          accept_loop(listener, state)
       end
     end
 
     defp handle_connection(local_socket, state) do
-      # Build WebSocket URL
-      ws_url = build_proxy_url(state)
+      headers = ClientSignals.auth_headers(state.client.token)
+      init_msg = Jason.encode!(%{host: state.remote_host, port: state.remote_port})
 
-      # Connect via gun
-      {:ok, {scheme, host, port, path}} = parse_ws_url(ws_url)
-
-      opts = Sprites.Transport.gun_opts(Atom.to_string(scheme))
-
-      case :gun.open(host, port, opts) do
-        {:ok, conn} ->
-          case :gun.await_up(conn, 10_000) do
-            {:ok, _protocol} ->
-              headers = ClientSignals.auth_headers(state.client.token)
-
-              stream_ref = :gun.ws_upgrade(conn, path, headers, %{})
-
-              receive do
-                {:gun_upgrade, ^conn, ^stream_ref, ["websocket"], _headers} ->
-                  # Send init message
-                  init_msg =
-                    Jason.encode!(%{
-                      host: state.remote_host,
-                      port: state.remote_port
-                    })
-
-                  :gun.ws_send(conn, stream_ref, {:text, init_msg})
-
-                  # Wait for response
-                  receive do
-                    {:gun_ws, ^conn, ^stream_ref, {:text, response}} ->
-                      case Jason.decode(response) do
-                        {:ok, %{"status" => "connected"}} ->
-                          # Start bidirectional proxy
-                          proxy_loop(local_socket, conn, stream_ref)
-
-                        {:ok, %{"status" => status}} ->
-                          :gen_tcp.close(local_socket)
-                          :gun.close(conn)
-                          {:error, {:proxy_failed, status}}
-
-                        {:error, _} ->
-                          :gen_tcp.close(local_socket)
-                          :gun.close(conn)
-                          {:error, :invalid_response}
-                      end
-
-                    {:gun_ws, ^conn, ^stream_ref, {:close, _, _}} ->
-                      :gen_tcp.close(local_socket)
-                      :gun.close(conn)
-                      {:error, :connection_closed}
-                  after
-                    10_000 ->
-                      :gen_tcp.close(local_socket)
-                      :gun.close(conn)
-                      {:error, :timeout}
-                  end
-
-                {:gun_response, ^conn, ^stream_ref, :nofin, status, _headers} ->
-                  :gen_tcp.close(local_socket)
-                  :gun.close(conn)
-                  {:error, {:upgrade_failed, status}}
-
-                {:gun_error, ^conn, ^stream_ref, reason} ->
-                  :gen_tcp.close(local_socket)
-                  :gun.close(conn)
-                  {:error, reason}
-              after
-                10_000 ->
-                  :gen_tcp.close(local_socket)
-                  :gun.close(conn)
-                  {:error, :upgrade_timeout}
-              end
-
-            {:error, reason} ->
-              :gen_tcp.close(local_socket)
-              :gun.close(conn)
-              {:error, reason}
-          end
+      with {:ok, ws, frames} <- WebSocket.connect(build_proxy_url(state), headers),
+           {:ok, ws, frames} <- send_init(ws, init_msg, frames),
+           {:ok, ws, frames} <- await_connected(ws, frames, deadline(10_000)) do
+        :ok = :inet.setopts(local_socket, active: true)
+        relay(frames, local_socket, ws)
+      else
+        {:error, %WebSocket{} = ws, reason} ->
+          WebSocket.close(ws)
+          :gen_tcp.close(local_socket)
+          {:error, reason}
 
         {:error, reason} ->
           :gen_tcp.close(local_socket)
@@ -226,50 +168,104 @@ defmodule Sprites.Proxy do
       end
     end
 
-    defp proxy_loop(local_socket, ws_conn, stream_ref) do
-      # Set local socket to active mode
-      :inet.setopts(local_socket, [{:active, true}])
-
-      do_proxy_loop(local_socket, ws_conn, stream_ref)
-    end
-
-    defp do_proxy_loop(local_socket, ws_conn, stream_ref) do
-      receive do
-        # Data from local socket -> send to WebSocket
-        {:tcp, ^local_socket, data} ->
-          :gun.ws_send(ws_conn, stream_ref, {:binary, data})
-          do_proxy_loop(local_socket, ws_conn, stream_ref)
-
-        # Local socket closed
-        {:tcp_closed, ^local_socket} ->
-          :gun.close(ws_conn)
-          :ok
-
-        {:tcp_error, ^local_socket, _reason} ->
-          :gun.close(ws_conn)
-          :ok
-
-        # Data from WebSocket -> send to local socket
-        {:gun_ws, ^ws_conn, ^stream_ref, {:binary, data}} ->
-          :gen_tcp.send(local_socket, data)
-          do_proxy_loop(local_socket, ws_conn, stream_ref)
-
-        # WebSocket closed
-        {:gun_ws, ^ws_conn, ^stream_ref, {:close, _, _}} ->
-          :gen_tcp.close(local_socket)
-          :gun.close(ws_conn)
-          :ok
-
-        {:gun_down, ^ws_conn, _, _, _} ->
-          :gen_tcp.close(local_socket)
-          :ok
-
-        {:gun_error, ^ws_conn, _, _reason} ->
-          :gen_tcp.close(local_socket)
-          :gun.close(ws_conn)
-          :ok
+    defp send_init(ws, init_msg, frames) do
+      case WebSocket.send_frame(ws, {:text, init_msg}) do
+        {:ok, ws} -> {:ok, ws, frames}
+        {:error, ws, reason} -> {:error, ws, reason}
       end
     end
+
+    defp deadline(timeout), do: System.monotonic_time(:millisecond) + timeout
+
+    # The local socket stays passive until the remote end confirms the
+    # connection, so every message here belongs to the WebSocket.
+    defp await_connected(ws, [{:text, json} | rest], _deadline) do
+      case Jason.decode(json) do
+        {:ok, %{"status" => "connected"}} -> {:ok, ws, rest}
+        {:ok, %{"status" => status}} -> {:error, ws, {:proxy_failed, status}}
+        _ -> {:error, ws, :invalid_response}
+      end
+    end
+
+    defp await_connected(ws, [{:close, _, _} | _], _deadline),
+      do: {:error, ws, :connection_closed}
+
+    defp await_connected(ws, [_frame | rest], deadline), do: await_connected(ws, rest, deadline)
+
+    defp await_connected(ws, [], deadline) do
+      remaining = max(deadline - System.monotonic_time(:millisecond), 0)
+
+      receive do
+        message ->
+          case WebSocket.stream(ws, message) do
+            {:ok, ws, frames} -> await_connected(ws, frames, deadline)
+            {:error, ws, reason, _frames} -> {:error, ws, reason}
+            :unknown -> await_connected(ws, [], deadline)
+          end
+      after
+        remaining -> {:error, ws, :timeout}
+      end
+    end
+
+    defp proxy_loop(local_socket, ws) do
+      receive do
+        {:tcp, ^local_socket, data} ->
+          case WebSocket.send_frame(ws, {:binary, data}) do
+            {:ok, ws} ->
+              proxy_loop(local_socket, ws)
+
+            {:error, ws, _reason} ->
+              WebSocket.close(ws)
+              :gen_tcp.close(local_socket)
+          end
+
+        {:tcp_closed, ^local_socket} ->
+          WebSocket.close(ws)
+
+        {:tcp_error, ^local_socket, _reason} ->
+          WebSocket.close(ws)
+          :gen_tcp.close(local_socket)
+
+        message ->
+          case WebSocket.stream(ws, message) do
+            {:ok, ws, frames} ->
+              relay(frames, local_socket, ws)
+
+            {:error, ws, _reason, frames} ->
+              forward(frames, local_socket)
+              WebSocket.close(ws)
+              :gen_tcp.close(local_socket)
+
+            :unknown ->
+              proxy_loop(local_socket, ws)
+          end
+      end
+    end
+
+    # Writes WebSocket frames to the local socket, then keeps proxying unless
+    # either side closed.
+    defp relay(frames, local_socket, ws) do
+      case forward(frames, local_socket) do
+        :ok ->
+          proxy_loop(local_socket, ws)
+
+        :closed ->
+          WebSocket.close(ws)
+          :gen_tcp.close(local_socket)
+      end
+    end
+
+    defp forward([], _local_socket), do: :ok
+    defp forward([{:close, _, _} | _], _local_socket), do: :closed
+
+    defp forward([{:binary, data} | rest], local_socket) do
+      case :gen_tcp.send(local_socket, data) do
+        :ok -> forward(rest, local_socket)
+        {:error, _} -> :closed
+      end
+    end
+
+    defp forward([_frame | rest], local_socket), do: forward(rest, local_socket)
 
     defp build_proxy_url(state) do
       base_url =
@@ -277,17 +273,6 @@ defmodule Sprites.Proxy do
         |> String.replace(~r/^http/, "ws")
 
       "#{base_url}/v1/sprites/#{Sprites.Path.encode_segment(state.sprite_name)}/proxy"
-    end
-
-    defp parse_ws_url(url) do
-      uri = URI.parse(url)
-
-      scheme = if uri.scheme == "wss", do: :wss, else: :ws
-      host = String.to_charlist(uri.host)
-      port = uri.port || if(scheme == :wss, do: 443, else: 80)
-      path = String.to_charlist(uri.path || "/")
-
-      {:ok, {scheme, host, port, path}}
     end
   end
 

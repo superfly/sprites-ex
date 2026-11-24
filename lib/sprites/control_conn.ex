@@ -16,7 +16,7 @@ defmodule Sprites.ControlConn do
   use GenServer
   @control_prefix "control:"
 
-  alias Sprites.ClientSignals
+  alias Sprites.{ClientSignals, WebSocket}
 
   # Client API
 
@@ -90,15 +90,13 @@ defmodule Sprites.ControlConn do
     url = Keyword.fetch!(opts, :url)
     token = Keyword.fetch!(opts, :token)
 
-    case do_connect(url, token) do
-      {:ok, conn, stream_ref} ->
-        {:ok,
-         %{
-           conn: conn,
-           stream_ref: stream_ref,
-           owner: nil,
-           op_active: false
-         }}
+    case WebSocket.connect(url, ClientSignals.auth_headers(token)) do
+      {:ok, ws, frames} ->
+        state = %{conn: ws, owner: nil, op_active: false}
+
+        if frames == [],
+          do: {:ok, state},
+          else: {:ok, state, {:continue, {:frames, frames}}}
 
       {:error, {:upgrade_failed, 404}} ->
         {:stop, {:control_not_supported, 404}}
@@ -123,84 +121,41 @@ defmodule Sprites.ControlConn do
           args: args
         })
 
-      frame = @control_prefix <> msg
-      :gun.ws_send(state.conn, state.stream_ref, {:text, frame})
-      {:reply, :ok, %{state | owner: owner, op_active: true}}
+      case WebSocket.send_frame(state.conn, {:text, @control_prefix <> msg}) do
+        {:ok, ws} -> {:reply, :ok, %{state | conn: ws, owner: owner, op_active: true}}
+        {:error, ws, reason} -> {:reply, {:error, reason}, %{state | conn: ws}}
+      end
     end
   end
 
   @impl true
-  def handle_cast({:send_data, data}, %{conn: conn, stream_ref: stream_ref} = state) do
-    :gun.ws_send(conn, stream_ref, {:binary, data})
-    {:noreply, state}
-  end
-
-  def handle_cast({:send_text, text}, %{conn: conn, stream_ref: stream_ref} = state) do
-    :gun.ws_send(conn, stream_ref, {:text, text})
-    {:noreply, state}
-  end
+  def handle_cast({:send_data, data}, state), do: send_frame(state, {:binary, data})
+  def handle_cast({:send_text, text}, state), do: send_frame(state, {:text, text})
 
   def handle_cast(:release, state) do
     {:noreply, %{state | owner: nil, op_active: false}}
   end
 
-  def handle_cast(:close, %{conn: conn} = state) do
-    :gun.close(conn)
-    {:stop, :normal, %{state | conn: nil}}
-  end
+  def handle_cast(:close, state), do: {:stop, :normal, state}
 
   @impl true
-  def handle_info({:gun_ws, conn, _stream_ref, {:binary, data}}, %{conn: conn} = state) do
-    if state.owner do
-      send(state.owner, {:control_data, :binary, data})
+  def handle_continue({:frames, frames}, state), do: handle_frames(frames, state)
+
+  @impl true
+  def handle_info(message, %{conn: %WebSocket{} = ws} = state) do
+    case WebSocket.stream(ws, message) do
+      {:ok, ws, frames} ->
+        handle_frames(frames, %{state | conn: ws})
+
+      {:error, ws, reason, frames} ->
+        case handle_frames(frames, %{state | conn: ws}) do
+          {:noreply, state} -> connection_lost("connection error: #{inspect(reason)}", state)
+          stop -> stop
+        end
+
+      :unknown ->
+        {:noreply, state}
     end
-
-    {:noreply, state}
-  end
-
-  def handle_info({:gun_ws, conn, _stream_ref, {:text, text}}, %{conn: conn} = state) do
-    if String.starts_with?(text, @control_prefix) do
-      payload = String.slice(text, byte_size(@control_prefix), byte_size(text))
-      handle_control_message(payload, state)
-    else
-      if state.owner do
-        send(state.owner, {:control_data, :text, text})
-      end
-
-      {:noreply, state}
-    end
-  end
-
-  def handle_info({:gun_ws, conn, _stream_ref, {:close, _code, _reason}}, %{conn: conn} = state) do
-    if state.owner && state.op_active do
-      send(state.owner, {:control_op_error, "connection closed"})
-    end
-
-    {:stop, :normal, state}
-  end
-
-  def handle_info({:gun_down, conn, _protocol, _reason, _killed}, %{conn: conn} = state) do
-    if state.owner && state.op_active do
-      send(state.owner, {:control_op_error, "connection down"})
-    end
-
-    {:stop, :normal, state}
-  end
-
-  def handle_info({:gun_error, conn, _stream_ref, reason}, %{conn: conn} = state) do
-    if state.owner && state.op_active do
-      send(state.owner, {:control_op_error, "gun error: #{inspect(reason)}"})
-    end
-
-    {:stop, :normal, state}
-  end
-
-  def handle_info({:gun_error, conn, reason}, %{conn: conn} = state) do
-    if state.owner && state.op_active do
-      send(state.owner, {:control_op_error, "gun error: #{inspect(reason)}"})
-    end
-
-    {:stop, :normal, state}
   end
 
   def handle_info(_message, state) do
@@ -208,14 +163,61 @@ defmodule Sprites.ControlConn do
   end
 
   @impl true
-  def terminate(_reason, %{conn: conn}) when conn != nil do
-    :gun.close(conn)
-    :ok
-  end
-
+  def terminate(_reason, %{conn: %WebSocket{} = ws}), do: WebSocket.close(ws)
   def terminate(_reason, _state), do: :ok
 
+  @doc false
+  # Handles decoded frames in order, stopping at the first terminal frame.
+  def handle_frames([], state), do: {:noreply, state}
+
+  def handle_frames([frame | rest], state) do
+    case handle_frame(frame, state) do
+      {:noreply, state} -> handle_frames(rest, state)
+      stop -> stop
+    end
+  end
+
   # Private helpers
+
+  defp handle_frame({:binary, data}, state) do
+    if state.owner do
+      send(state.owner, {:control_data, :binary, data})
+    end
+
+    {:noreply, state}
+  end
+
+  defp handle_frame({:text, @control_prefix <> payload}, state) do
+    handle_control_message(payload, state)
+  end
+
+  defp handle_frame({:text, text}, state) do
+    if state.owner do
+      send(state.owner, {:control_data, :text, text})
+    end
+
+    {:noreply, state}
+  end
+
+  defp handle_frame({:close, _code, _reason}, state) do
+    connection_lost("connection closed", state)
+  end
+
+  defp connection_lost(message, state) do
+    if state.owner && state.op_active do
+      send(state.owner, {:control_op_error, message})
+    end
+
+    {:stop, :normal, state}
+  end
+
+  # A failed send means the socket is gone; its close message stops this process.
+  defp send_frame(state, frame) do
+    case WebSocket.send_frame(state.conn, frame) do
+      {:ok, ws} -> {:noreply, %{state | conn: ws}}
+      {:error, ws, _reason} -> {:noreply, %{state | conn: ws}}
+    end
+  end
 
   defp handle_control_message(payload, state) do
     case Jason.decode(payload) do
@@ -249,75 +251,6 @@ defmodule Sprites.ControlConn do
 
       _ ->
         {:noreply, state}
-    end
-  end
-
-  defp do_connect(url, token) do
-    uri = URI.parse(url)
-    host = String.to_charlist(uri.host)
-    port = uri.port || if(uri.scheme == "wss", do: 443, else: 80)
-
-    gun_opts = Sprites.Transport.gun_opts(uri.scheme)
-
-    case :gun.open(host, port, gun_opts) do
-      {:ok, conn} ->
-        case :gun.await_up(conn, 10_000) do
-          {:ok, _protocol} ->
-            path = "#{uri.path}?#{uri.query || ""}"
-            headers = ClientSignals.auth_headers(token)
-            stream_ref = :gun.ws_upgrade(conn, path, headers)
-
-            receive do
-              {:gun_upgrade, ^conn, ^stream_ref, ["websocket"], _headers} ->
-                {:ok, conn, stream_ref}
-
-              {:gun_response, ^conn, ^stream_ref, is_fin, status, headers} ->
-                body = read_response_body(conn, stream_ref, is_fin)
-                :gun.close(conn)
-
-                case Sprites.Error.parse_api_error(status, body, headers) do
-                  {:ok, %Sprites.Error.APIError{} = api_error} ->
-                    {:error, api_error}
-
-                  {:ok, nil} ->
-                    {:error, {:upgrade_failed, status}}
-                end
-
-              {:gun_error, ^conn, ^stream_ref, reason} ->
-                :gun.close(conn)
-                {:error, reason}
-
-              {:gun_error, ^conn, reason} ->
-                :gun.close(conn)
-                {:error, reason}
-            after
-              10_000 ->
-                :gun.close(conn)
-                {:error, :upgrade_timeout}
-            end
-
-          {:error, reason} ->
-            :gun.close(conn)
-            {:error, reason}
-        end
-
-      {:error, reason} ->
-        {:error, reason}
-    end
-  end
-
-  defp read_response_body(_conn, _stream_ref, :fin), do: ""
-
-  defp read_response_body(conn, stream_ref, :nofin) do
-    receive do
-      {:gun_data, ^conn, ^stream_ref, :fin, data} ->
-        data
-
-      {:gun_data, ^conn, ^stream_ref, :nofin, data} ->
-        data <> read_response_body(conn, stream_ref, :nofin)
-    after
-      5_000 ->
-        ""
     end
   end
 end

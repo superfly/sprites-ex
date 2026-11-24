@@ -53,7 +53,8 @@ lib/sprites/
 ├── sprites.ex      # Main public API (entry point)
 ├── client.ex       # HTTP client for REST API (uses Req)
 ├── sprite.ex       # Sprite instance representation
-├── command.ex      # Command execution via WebSocket (GenServer, uses gun)
+├── command.ex      # Command execution via WebSocket (GenServer)
+├── web_socket.ex   # Mint-based WebSocket client used by command, control, proxy
 ├── protocol.ex     # Binary protocol codec for WebSocket messages
 ├── stream.ex       # Lazy Stream interface for command output
 └── errors.ex       # Custom exceptions (APIError, CommandError, etc.)
@@ -62,7 +63,7 @@ lib/sprites/
 ## Key Dependencies
 
 - **req** - HTTP client for REST API calls
-- **gun** - Erlang WebSocket/HTTP client for command execution
+- **mint** / **mint_web_socket** - WebSocket client for command execution, control and proxy
 - **jason** - JSON encoding/decoding
 
 ## Environment Variables
