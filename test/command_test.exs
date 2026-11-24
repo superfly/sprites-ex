@@ -19,7 +19,7 @@ defmodule Sprites.CommandTest do
       ref = state.ref
 
       assert {:stop, :normal, %{exit_code: nil, terminal_error: :invalid_exit_code} = stopped} =
-               Command.handle_info(exit_frame(mode, code), state)
+               deliver(exit_frame(mode, code), state)
 
       assert_receive {:error, %{ref: ^ref}, :invalid_exit_code}
       refute_received {:exit, _, _}
@@ -44,39 +44,37 @@ defmodule Sprites.CommandTest do
         })
 
       ref = state.ref
-      result = Command.handle_info(exit_frame(mode, code), state)
+      result = deliver(exit_frame(mode, code), state)
       assert elem(result, tuple_size(result) - 1).exit_code == code
       assert_receive {:exit, %{ref: ^ref}, ^code}
       refute_received {:error, _, _}
     end
   end
 
-  for closing <- [:close, :down] do
-    test "an invalid exit drained during #{closing} reports one error and no success" do
-      state = command_state()
-      ref = state.ref
-      send(self(), exit_frame(:direct, "0"))
+  test "an invalid exit followed by a close reports one error and no success" do
+    state = command_state()
+    ref = state.ref
+    frames = [exit_frame(:direct, "0"), {:close, 1000, ""}]
 
-      frame =
-        if unquote(closing) == :close,
-          do: {:gun_ws, nil, make_ref(), {:close, 1000, ""}},
-          else: {:gun_down, nil, :http, :closed, []}
+    assert {:stop, :normal, %{exit_code: nil}} = Command.handle_frames(frames, state)
 
-      assert {:stop, :normal, %{exit_code: nil}} = Command.handle_info(frame, state)
-
-      assert_receive {:error, %{ref: ^ref}, :invalid_exit_code}
-      refute_received {:error, _, _}
-      refute_received {:exit, _, _}
-    end
+    assert_receive {:error, %{ref: ^ref}, :invalid_exit_code}
+    refute_received {:error, _, _}
+    refute_received {:exit, _, _}
   end
+
+  defp deliver({:control_op_complete, _} = message, state),
+    do: Command.handle_info(message, state)
+
+  defp deliver({:control_data, _, _} = message, state), do: Command.handle_info(message, state)
+  defp deliver(frame, state), do: Command.handle_frames([frame], state)
 
   defp exit_frame(:op_complete, code) do
     # Exercise the actual control JSON decoder before the command boundary.
     payload = "control:" <> Jason.encode!(%{type: "op.complete", args: %{exitCode: code}})
     state = %{conn: nil, owner: self(), op_active: true}
 
-    assert {:noreply, %{op_active: false}} =
-             ControlConn.handle_info({:gun_ws, nil, make_ref(), {:text, payload}}, state)
+    assert {:noreply, %{op_active: false}} = ControlConn.handle_frames([{:text, payload}], state)
 
     assert_receive {:control_op_complete, ^code} = message
     message
@@ -87,7 +85,7 @@ defmodule Sprites.CommandTest do
 
     if mode == :control,
       do: {:control_data, :text, json},
-      else: {:gun_ws, nil, make_ref(), {:text, json}}
+      else: {:text, json}
   end
 
   test "handles the exit_code field in control text exit frames" do
@@ -121,10 +119,7 @@ defmodule Sprites.CommandTest do
     ref = state.ref
 
     assert {:stop, :normal, %{exit_code: 0}} =
-             Command.handle_info(
-               {:gun_ws, nil, make_ref(), {:text, ~s({"type":"exit"})}},
-               state
-             )
+             Command.handle_frames([{:text, ~s({"type":"exit"})}], state)
 
     assert_receive {:exit, %{ref: ^ref}, 0}
   end
@@ -135,23 +130,9 @@ defmodule Sprites.CommandTest do
     frame = <<Protocol.exit_id(), 42>>
 
     assert {:stop, :normal, %{exit_code: 42}} =
-             Command.handle_info({:gun_ws, nil, make_ref(), {:binary, frame}}, state)
+             Command.handle_frames([{:binary, frame}], state)
 
     assert_receive {:exit, %{ref: ^ref}, 42}
-  end
-
-  test "drains a pending direct binary exit before handling gun_down" do
-    state = command_state()
-    ref = state.ref
-    frame = <<Protocol.exit_id(), 0>>
-
-    send(self(), {:gun_ws, nil, make_ref(), {:binary, frame}})
-
-    assert {:stop, :normal, _state} =
-             Command.handle_info({:gun_down, nil, :http, :closed, []}, state)
-
-    assert_receive {:exit, %{ref: ^ref}, 0}
-    refute_receive {:error, %{ref: ^ref}, :closed}
   end
 
   test "reports an error when a close frame arrives without an exit frame" do
@@ -159,21 +140,18 @@ defmodule Sprites.CommandTest do
     ref = state.ref
 
     assert {:stop, :normal, %{exit_code: nil}} =
-             Command.handle_info({:gun_ws, nil, make_ref(), {:close, 1000, ""}}, state)
+             Command.handle_frames([{:close, 1000, ""}], state)
 
     assert_receive {:error, %{ref: ^ref}, :closed_before_exit}
     refute_receive {:exit, %{ref: ^ref}, 0}
   end
 
-  test "drains a pending direct binary exit before handling a close frame" do
+  test "an exit frame followed by a close in the same batch reports success" do
     state = command_state()
     ref = state.ref
-    frame = <<Protocol.exit_id(), 0>>
+    frames = [{:binary, <<Protocol.exit_id(), 0>>}, {:close, 1000, ""}]
 
-    send(self(), {:gun_ws, nil, make_ref(), {:binary, frame}})
-
-    assert {:stop, :normal, %{exit_code: 0}} =
-             Command.handle_info({:gun_ws, nil, make_ref(), {:close, 1000, ""}}, state)
+    assert {:stop, :normal, %{exit_code: 0}} = Command.handle_frames(frames, state)
 
     assert_receive {:exit, %{ref: ^ref}, 0}
     refute_receive {:error, %{ref: ^ref}, :closed_before_exit}
@@ -186,7 +164,6 @@ defmodule Sprites.CommandTest do
         ref: make_ref(),
         tty_mode: false,
         conn: nil,
-        stream_ref: nil,
         exit_code: nil,
         token: nil,
         sprite: nil,

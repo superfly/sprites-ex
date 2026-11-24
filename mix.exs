@@ -29,10 +29,13 @@ defmodule Sprites.MixProject do
   defp deps do
     [
       {:req, "~> 0.5"},
-      {:gun, "~> 2.8"},
+      {:mint, "~> 1.7"},
+      {:mint_web_socket, "~> 1.0"},
       {:jason, "~> 1.4"},
       {:client_signals, "~> 0.5.0"},
       {:plug, "~> 1.0", only: :test},
+      {:bandit, "~> 1.6", only: :test},
+      {:websock_adapter, "~> 0.5", only: :test},
       {:ex_doc, "~> 0.31", only: :dev, runtime: false}
     ]
   end

@@ -10,7 +10,6 @@ defmodule Sprites.SessionInfoTest do
         ref: make_ref(),
         tty_mode: false,
         conn: nil,
-        stream_ref: nil,
         exit_code: nil,
         using_control: false,
         control_conn: nil,
@@ -22,7 +21,7 @@ defmodule Sprites.SessionInfoTest do
   end
 
   defp direct(state, message) do
-    Command.handle_info({:gun_ws, nil, make_ref(), {:text, Jason.encode!(message)}}, state)
+    Command.handle_frames([{:text, Jason.encode!(message)}], state)
   end
 
   for {mode, id, normalized} <- [
@@ -36,12 +35,12 @@ defmodule Sprites.SessionInfoTest do
       ref = state.ref
       message = %{type: "session_info", session_id: unquote(id), command: "private command"}
 
-      frame =
+      result =
         if unquote(mode) == :control,
-          do: {:control_data, :text, Jason.encode!(message)},
-          else: {:gun_ws, nil, make_ref(), {:text, Jason.encode!(message)}}
+          do: Command.handle_info({:control_data, :text, Jason.encode!(message)}, state),
+          else: direct(state, message)
 
-      assert {:noreply, %{session_id: unquote(normalized)}} = Command.handle_info(frame, state)
+      assert {:noreply, %{session_id: unquote(normalized)}} = result
       assert_receive {:session_info, %{ref: ^ref}, unquote(normalized)}
       refute_receive {:session_info, _, _}
     end
@@ -108,23 +107,16 @@ defmodule Sprites.SessionInfoTest do
     refute_receive {:session_info, _, _}
   end
 
-  for closing <- [:close, :down] do
-    test "metadata failure drained during #{closing} emits exactly one error" do
-      state = state()
-      ref = state.ref
-      send(self(), {:gun_ws, nil, make_ref(), {:text, ~s({"type":"session_info"})}})
+  test "metadata failure followed by a close emits exactly one error" do
+    state = state()
+    ref = state.ref
+    frames = [{:text, ~s({"type":"session_info"})}, {:close, 1000, ""}]
 
-      frame =
-        if unquote(closing) == :close,
-          do: {:gun_ws, nil, make_ref(), {:close, 1000, ""}},
-          else: {:gun_down, nil, :http, :closed, []}
+    assert {:stop, :normal, _state} = Command.handle_frames(frames, state)
 
-      assert {:stop, :normal, _state} = Command.handle_info(frame, state)
-
-      assert_receive {:error, %{ref: ^ref}, :invalid_session_info}
-      refute_receive {:error, %{ref: ^ref}, _}
-      refute_receive {:exit, %{ref: ^ref}, _}
-    end
+    assert_receive {:error, %{ref: ^ref}, :invalid_session_info}
+    refute_receive {:error, %{ref: ^ref}, _}
+    refute_receive {:exit, %{ref: ^ref}, _}
   end
 
   test "missing provider metadata and lookalike stdout never invent identity" do
@@ -133,15 +125,12 @@ defmodule Sprites.SessionInfoTest do
     text = Jason.encode!(%{type: "session_info", session_id: 19})
 
     assert {:noreply, ^state} =
-             Command.handle_info(
-               {:gun_ws, nil, make_ref(), {:binary, <<1, text::binary>>}},
-               state
-             )
+             Command.handle_frames([{:binary, <<1, text::binary>>}], state)
 
     assert_receive {:stdout, %{ref: ^ref}, ^text}
 
     assert {:stop, :normal, %{session_id: nil, exit_code: 7}} =
-             Command.handle_info({:gun_ws, nil, make_ref(), {:binary, <<3, 7>>}}, state)
+             Command.handle_frames([{:binary, <<3, 7>>}], state)
 
     assert_receive {:exit, %{ref: ^ref}, 7}
     refute_receive {:session_info, _, _}

@@ -2,7 +2,7 @@ defmodule Sprites.Command do
   @moduledoc """
   Represents a running command on a sprite.
 
-  Uses a GenServer to manage the WebSocket connection via gun.
+  Uses a GenServer to manage the WebSocket connection.
   Messages are sent to the owner process:
 
     * `{:stdout, command, data}` - stdout data received
@@ -20,7 +20,7 @@ defmodule Sprites.Command do
 
   use GenServer
 
-  alias Sprites.{Sprite, Protocol, Error, Control, ControlConn, ClientSignals}
+  alias Sprites.{Sprite, Protocol, Control, ControlConn, ClientSignals, WebSocket}
 
   defstruct [:ref, :pid, :sprite, :owner, :tty_mode]
 
@@ -139,7 +139,6 @@ defmodule Sprites.Command do
       report_session_info: Keyword.get(opts, :session_info, false) == true,
       session_id: nil,
       conn: nil,
-      stream_ref: nil,
       exit_code: nil,
       token: token,
       sprite: sprite,
@@ -222,70 +221,15 @@ defmodule Sprites.Command do
     url = Sprite.exec_url(sprite, command, args, opts)
     state = Map.put(state, :url, url)
 
-    case do_connect(url, token) do
-      {:ok, conn, stream_ref} ->
-        {:ok, %{state | conn: conn, stream_ref: stream_ref}}
-
-      {:error, reason} ->
-        {:stop, reason}
+    case WebSocket.connect(url, ClientSignals.auth_headers(token)) do
+      {:ok, ws, []} -> {:ok, %{state | conn: ws}}
+      {:ok, ws, frames} -> {:ok, %{state | conn: ws}, {:continue, {:frames, frames}}}
+      {:error, reason} -> {:stop, reason}
     end
   end
 
-  defp do_connect(url, token) do
-    uri = URI.parse(url)
-    host = String.to_charlist(uri.host)
-    port = uri.port || if(uri.scheme == "wss", do: 443, else: 80)
-
-    gun_opts = Sprites.Transport.gun_opts(uri.scheme)
-
-    case :gun.open(host, port, gun_opts) do
-      {:ok, conn} ->
-        case :gun.await_up(conn, 10_000) do
-          {:ok, _protocol} ->
-            path = "#{uri.path}?#{uri.query || ""}"
-            headers = ClientSignals.auth_headers(token)
-            stream_ref = :gun.ws_upgrade(conn, path, headers)
-
-            # Wait for WebSocket upgrade
-            receive do
-              {:gun_upgrade, ^conn, ^stream_ref, ["websocket"], _headers} ->
-                {:ok, conn, stream_ref}
-
-              {:gun_response, ^conn, ^stream_ref, is_fin, status, headers} ->
-                # Try to read the response body and parse as structured API error
-                body = read_response_body(conn, stream_ref, is_fin)
-                :gun.close(conn)
-
-                case Error.parse_api_error(status, body, headers) do
-                  {:ok, %Error.APIError{} = api_error} ->
-                    {:error, api_error}
-
-                  {:ok, nil} ->
-                    {:error, {:upgrade_failed, status}}
-                end
-
-              {:gun_error, ^conn, ^stream_ref, reason} ->
-                :gun.close(conn)
-                {:error, reason}
-
-              {:gun_error, ^conn, reason} ->
-                :gun.close(conn)
-                {:error, reason}
-            after
-              10_000 ->
-                :gun.close(conn)
-                {:error, :upgrade_timeout}
-            end
-
-          {:error, reason} ->
-            :gun.close(conn)
-            {:error, reason}
-        end
-
-      {:error, reason} ->
-        {:error, reason}
-    end
-  end
+  @impl true
+  def handle_continue({:frames, frames}, state), do: handle_frames(frames, state)
 
   # --- Control mode handle_info clauses ---
 
@@ -336,46 +280,47 @@ defmodule Sprites.Command do
 
   # --- Direct mode handle_info clauses ---
 
-  def handle_info({:gun_ws, conn, _stream_ref, {:binary, data}}, %{conn: conn} = state) do
-    handle_binary_frame(data, state)
-  end
+  def handle_info(message, %{conn: %WebSocket{} = ws} = state) do
+    case WebSocket.stream(ws, message) do
+      {:ok, ws, frames} ->
+        handle_frames(frames, %{state | conn: ws})
 
-  def handle_info({:gun_ws, conn, _stream_ref, {:text, json}}, %{conn: conn} = state) do
-    handle_text_frame(json, state)
-  end
+      {:error, ws, reason, frames} ->
+        case handle_frames(frames, %{state | conn: ws}) do
+          {:noreply, state} -> connection_lost(reason, state)
+          stop -> stop
+        end
 
-  def handle_info({:gun_ws, conn, _stream_ref, {:close, code, reason}}, %{conn: conn} = state) do
-    handle_close_frame(code, reason, state)
-  end
-
-  def handle_info({:gun_down, conn, _protocol, reason, _killed_streams}, %{conn: conn} = state) do
-    if state.exit_code == nil do
-      # For normal closes (:closed, :normal), drain any pending WS frames
-      # from the mailbox before reporting an error. The exit frame may have
-      # been delivered but not yet processed.
-      state = drain_pending_frames(state)
-
-      if state.exit_code == nil and is_nil(Map.get(state, :terminal_error)) do
-        # Still no exit code after draining — report as error
-        send(state.owner, {:error, %{ref: state.ref}, reason})
-      end
+      :unknown ->
+        {:noreply, state}
     end
-
-    {:stop, :normal, state}
-  end
-
-  def handle_info({:gun_error, conn, _stream_ref, reason}, %{conn: conn} = state) do
-    send(state.owner, {:error, %{ref: state.ref}, reason})
-    {:stop, :normal, state}
-  end
-
-  def handle_info({:gun_error, conn, reason}, %{conn: conn} = state) do
-    send(state.owner, {:error, %{ref: state.ref}, reason})
-    {:stop, :normal, state}
   end
 
   def handle_info(_message, state) do
     {:noreply, state}
+  end
+
+  @doc false
+  # Handles decoded frames in order, stopping at the first terminal frame.
+  def handle_frames([], state), do: {:noreply, state}
+
+  def handle_frames([frame | rest], state) do
+    case handle_frame(frame, state) do
+      {:noreply, state} -> handle_frames(rest, state)
+      stop -> stop
+    end
+  end
+
+  defp handle_frame({:binary, data}, state), do: handle_binary_frame(data, state)
+  defp handle_frame({:text, json}, state), do: handle_text_frame(json, state)
+  defp handle_frame({:close, code, reason}, state), do: handle_close_frame(code, reason, state)
+
+  defp connection_lost(reason, state) do
+    if state.exit_code == nil and is_nil(Map.get(state, :terminal_error)) do
+      send(state.owner, {:error, %{ref: state.ref}, reason})
+    end
+
+    {:stop, :normal, state}
   end
 
   # --- Write stdin ---
@@ -392,15 +337,11 @@ defmodule Sprites.Command do
     {:reply, :ok, state}
   end
 
-  def handle_call(
-        {:write_stdin, data},
-        _from,
-        %{conn: conn, stream_ref: stream_ref, tty_mode: tty_mode} = state
-      )
-      when conn != nil do
-    frame_data = Protocol.encode_stdin(data, tty_mode)
-    :gun.ws_send(conn, stream_ref, {:binary, frame_data})
-    {:reply, :ok, state}
+  def handle_call({:write_stdin, data}, _from, %{conn: %WebSocket{} = ws} = state) do
+    case WebSocket.send_frame(ws, {:binary, Protocol.encode_stdin(data, state.tty_mode)}) do
+      {:ok, ws} -> {:reply, :ok, %{state | conn: ws}}
+      {:error, ws, reason} -> {:reply, {:error, reason}, %{state | conn: ws}}
+    end
   end
 
   def handle_call({:write_stdin, _data}, _from, state) do
@@ -420,11 +361,8 @@ defmodule Sprites.Command do
     {:noreply, state}
   end
 
-  def handle_cast(:close_stdin, %{conn: conn, stream_ref: stream_ref, tty_mode: false} = state)
-      when conn != nil do
-    frame_data = Protocol.encode_stdin_eof()
-    :gun.ws_send(conn, stream_ref, {:binary, frame_data})
-    {:noreply, state}
+  def handle_cast(:close_stdin, %{conn: %WebSocket{}, tty_mode: false} = state) do
+    send_direct(state, {:binary, Protocol.encode_stdin_eof()})
   end
 
   def handle_cast(:close_stdin, state), do: {:noreply, state}
@@ -441,14 +379,8 @@ defmodule Sprites.Command do
     {:noreply, state}
   end
 
-  def handle_cast(
-        {:resize, rows, cols},
-        %{conn: conn, stream_ref: stream_ref, tty_mode: true} = state
-      )
-      when conn != nil do
-    message = Jason.encode!(%{type: "resize", rows: rows, cols: cols})
-    :gun.ws_send(conn, stream_ref, {:text, message})
-    {:noreply, state}
+  def handle_cast({:resize, rows, cols}, %{conn: %WebSocket{}, tty_mode: true} = state) do
+    send_direct(state, {:text, Jason.encode!(%{type: "resize", rows: rows, cols: cols})})
   end
 
   def handle_cast({:resize, _, _}, state), do: {:noreply, state}
@@ -462,14 +394,19 @@ defmodule Sprites.Command do
     :ok
   end
 
-  def terminate(_reason, %{conn: conn}) when conn != nil do
-    :gun.close(conn)
-    :ok
-  end
+  def terminate(_reason, %{conn: %WebSocket{} = ws}), do: WebSocket.close(ws)
 
   def terminate(_reason, _state), do: :ok
 
   # Private helpers
+
+  # A failed send means the socket is gone; its close message ends the command.
+  defp send_direct(state, frame) do
+    case WebSocket.send_frame(state.conn, frame) do
+      {:ok, ws} -> {:noreply, %{state | conn: ws}}
+      {:error, ws, _reason} -> {:noreply, %{state | conn: ws}}
+    end
+  end
 
   defp handle_binary_frame(data, %{tty_mode: true, owner: owner, ref: ref} = state) do
     send(owner, {:stdout, %{ref: ref}, data})
@@ -494,11 +431,6 @@ defmodule Sprites.Command do
           {:noreply, %{state | exit_code: code}}
         else
           send(owner, {:exit, %{ref: ref}, code})
-
-          if state.conn do
-            :gun.ws_send(state.conn, state.stream_ref, :close)
-          end
-
           {:stop, :normal, %{state | exit_code: code}}
         end
 
@@ -531,11 +463,6 @@ defmodule Sprites.Command do
           {:noreply, %{state | exit_code: code}}
         else
           send(owner, {:exit, %{ref: ref}, code})
-
-          if state.conn do
-            :gun.ws_send(state.conn, state.stream_ref, :close)
-          end
-
           {:stop, :normal, %{state | exit_code: code}}
         end
 
@@ -594,9 +521,7 @@ defmodule Sprites.Command do
   end
 
   defp handle_close_frame(_code, _reason, %{exit_code: nil} = state) do
-    state = drain_pending_frames(state)
-
-    if state.exit_code == nil and is_nil(Map.get(state, :terminal_error)) do
+    if is_nil(Map.get(state, :terminal_error)) do
       send(state.owner, {:error, %{ref: state.ref}, :closed_before_exit})
     end
 
@@ -628,45 +553,6 @@ defmodule Sprites.Command do
     after
       timeout ->
         raise Sprites.Error.TimeoutError, timeout: timeout
-    end
-  end
-
-  # Drain any pending WebSocket frames from the mailbox.
-  # Called when a connection closes to pick up exit frames that may have arrived
-  # but not yet been processed (race between data frames and connection close).
-  defp drain_pending_frames(%{conn: conn} = state) do
-    receive do
-      {:gun_ws, ^conn, _stream_ref, {:binary, data}} ->
-        case handle_binary_frame(data, state) do
-          {:noreply, state} -> drain_pending_frames(state)
-          {:stop, :normal, state} -> state
-        end
-
-      {:gun_ws, ^conn, _stream_ref, {:text, json}} ->
-        case handle_text_frame(json, state) do
-          {:noreply, state} -> drain_pending_frames(state)
-          {:stop, :normal, state} -> state
-        end
-    after
-      0 -> state
-    end
-  end
-
-  defp drain_pending_frames(state), do: state
-
-  # Read the response body from a failed HTTP response
-  defp read_response_body(_conn, _stream_ref, :fin), do: ""
-
-  defp read_response_body(conn, stream_ref, :nofin) do
-    receive do
-      {:gun_data, ^conn, ^stream_ref, :fin, data} ->
-        data
-
-      {:gun_data, ^conn, ^stream_ref, :nofin, data} ->
-        data <> read_response_body(conn, stream_ref, :nofin)
-    after
-      5_000 ->
-        ""
     end
   end
 end
