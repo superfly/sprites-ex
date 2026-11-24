@@ -9,10 +9,12 @@ Add `sprites` to your list of dependencies in `mix.exs`:
 ```elixir
 def deps do
   [
-    {:sprites, "~> 0.1.0"}
+    {:sprites, "~> 0.2"}
   ]
 end
 ```
+
+Requires Elixir 1.17+ and OTP 27+.
 
 ## Quick Start
 

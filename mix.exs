@@ -8,7 +8,7 @@ defmodule Sprites.MixProject do
     [
       app: :sprites,
       version: @version,
-      elixir: "~> 1.15",
+      elixir: "~> 1.17",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
       name: "Sprites",
@@ -29,9 +29,7 @@ defmodule Sprites.MixProject do
   defp deps do
     [
       {:req, "~> 0.5"},
-      {:gun, "~> 2.1"},
-      # Cowlib 2.20 requires OTP 27; keep compatibility with Elixir 1.15 / OTP 26.
-      {:cowlib, "~> 2.19.0"},
+      {:gun, "~> 2.8"},
       {:jason, "~> 1.4"},
       {:client_signals, "~> 0.5.0"},
       {:plug, "~> 1.0", only: :test},
@@ -43,7 +41,7 @@ defmodule Sprites.MixProject do
     [
       main: "readme",
       source_ref: "v#{@version}",
-      extras: ["README.md"]
+      extras: ["README.md", "CHANGELOG.md"]
     ]
   end
 
